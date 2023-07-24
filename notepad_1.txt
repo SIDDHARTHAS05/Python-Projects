@@ -1,0 +1,2585 @@
+drop table #cp_temp_pcx
+Select A.* , coalesce (b.[az_cust_id], a.[AZ ID]) as new_Az_id
+into #cp_temp_pcx
+from [AZ_Call_Plan_Discovery].[dbo].[l02_2022-11-30 Q1'23 PCx National Call Plan Workbook v1.0] as a
+LEFT join [dbo].[l128_d_old_cust_id_xref] b
+	on a.[AZ ID]= b.old_az_cust_id
+where a.[AZ ID] is not null and a.[AZ ID] not in ('null')
+--Select * from #cp_temp_pcx  where [Spec Group]='PCP/OTHERS'
+
+drop table #cp_tem_pcx1
+Select Distinct new_Az_id , 1 as PCx_1_call_plan 
+into #cp_tem_pcx1
+from #cp_temp_pcx where ([Product 1] ='Farxiga' or [Product 2] ='Farxiga')
+ 
+--Select top 10* from #cp_tem_pcx1
+drop table #cp_tem_pcx23
+Select Distinct new_Az_id , 1 as PCx_23_call_plan 
+into #cp_tem_pcx23
+from #cp_temp_pcx where ([Product 1] = 'BREZTRI AEROSPHERE' or [Product 2] ='BREZTRI AEROSPHERE')
+
+
+
+drop table #frx_seg_pcx
+select coalesce (b.[az_cust_id], a.[HCP AZ ID]) as new_Az_id,[Specialty Group],
+case when [farxiga priority] in ('1. Priority 1','2. Priority 2','3. Priority 3') 
+and [Specialty Group] in ('PCP','ALLs','ENTs','PULMs') then 1  else 0 end as in_frx_seg,
+[farxiga priority] into #frx_seg_pcx
+from [dbo].[l204_2023-03-24 HCP_segmentation_files_Farxiga_with_Eligibility_and_Accessibility_metrics] as a
+LEFT join [dbo].[l128_d_old_cust_id_xref] b
+	on a.[HCP AZ ID]= b.old_az_cust_id 
+	and a.[farxiga priority] in ('1. Priority 1','2. Priority 2','3. Priority 3','No Priority')
+ where a.[HCP AZ ID] is not null and a.[HCP AZ ID] not in ('null')
+--Select top 10* from #frx_seg_pcx
+
+drop table #bre_segment_pcx
+select coalesce (b.[az_cust_id], a.[HCP AZ ID]) as new_Az_id,[Breztri priority],[Specialty Group],
+case when [Breztri priority] in ('T1 - Green','T1 Plus - Purple','T2 - Yellow','T3 - Orange') and 
+[Specialty Group] in ('PCP','NEPH','ENDOs','CARDs') then 1  
+else 0 end in_BRE_seg into 
+#bre_segment_pcx
+from  [AZ_Call_Plan_Discovery].[dbo].[l203_2023-03-24 HCP_segmentation_files_Breztri_with_Eligibility_and_Accessibility_metrics] a
+LEFT join [dbo].[l128_d_old_cust_id_xref] b
+	on a.[HCP AZ ID]= b.old_az_cust_id 
+	and a.[Breztri priority] in ('T1 - Green','T1 Plus - Purple','T2 - Yellow','T3 - Orange','T4 - Red') 
+ where a.[HCP AZ ID] is not null and a.[HCP AZ ID] not in ('null')
+
+
+drop table  #aligned_universetemp
+	select Distinct [new_Az_id]
+	into #aligned_universetemp
+	from #cp_tem_pcx1
+union
+	select Distinct [new_Az_id] from #cp_tem_pcx23
+union
+	Select Distinct [new_Az_id] from #bre_segment_pcx 
+union	
+Select Distinct [new_Az_id] from #frx_seg_pcx 
+
+
+drop table  #aligned_universe1
+Select Distinct [new_Az_id] into #aligned_universe1 from #aligned_universetemp
+where [new_Az_id] is not null and [new_Az_id] not in ('null')
+
+--Select count(*) from #aligned_universe1
+
+-------------------------------------------------------------------------------------
+
+drop table  #aligned_universe2
+	select distinct a1.*,b1.PCx_1_call_plan,c1.PCx_23_call_plan,d1.in_BRE_seg,d1.[Specialty Group] as Bre_spec_grp,
+	d1.[Breztri priority] as Bre_priority,e1.in_frx_seg,e1.[Specialty Group] as FRX_spec_group,
+	e1.[Farxiga priority] as frx_priority
+	into #aligned_universe2 
+	from #aligned_universe1 a1
+left join
+#cp_tem_pcx1 b1 on a1.[new_Az_id]=b1.[new_Az_id]
+left join
+#cp_tem_pcx23 c1 on a1.[new_Az_id]=c1.[new_Az_id]
+left join
+#bre_segment_pcx d1 on a1.[new_Az_id]=d1.[new_Az_id]
+left join
+#frx_seg_pcx e1 on a1.[new_Az_id]=e1.[new_Az_id]
+
+--Select top 10* from #aligned_universe2
+
+drop table #aligned_universe2_1
+SELECT * INTO #aligned_universe2_1 FROM #aligned_universe2
+WHERE PCx_1_call_plan >0 OR PCx_23_call_plan >0 OR IN_BRE_sEG>0 OR IN_FRX_sEG>0
+
+DROP TABLE #DUPTEMP
+SELECT [new_Az_id], COUNT( *) AS CNT INTO #DUPTEMP
+FROM #aligned_universe2_1
+GROUP BY [new_Az_id]
+ORDER BY CNT DESC
+
+---------------------------------------  Updated Exclusion  ----------------------------------------------------------------
+
+drop table #aligned_universe4
+SELECT *,
+	  case when new_Az_id in (select distinct coalesce(b.az_cust_id,a.az_cust_id) as new_Az_id from [dbo].[l133_r_cust_block_nosee] a 
+	  LEFT join [dbo].[l128_d_old_cust_id_xref] b 
+	  on a.[az_cust_id]= b.old_az_cust_id  ) then 'Y' else 'N' end as [No See],
+
+	  Case when new_Az_id in (select distinct coalesce(b.az_cust_id,a.az_cust_id) as new_Az_id from [dbo].[l132_r_cust_block_kaiser] a
+	  LEFT join [dbo].[l128_d_old_cust_id_xref] b 
+	  on a.[az_cust_id]= b.old_az_cust_id  where a.cust_clas='HCP') then 'Y' else 'N' END as Kaiser,
+
+	  case when new_Az_id in (select distinct coalesce(b.az_cust_id,a.hcp_az_cust_id) as new_Az_id from [dbo].[l141_lg_reference.hcp_demog] a
+	  LEFT join [dbo].[l128_d_old_cust_id_xref] b 
+	  on a.[hcp_az_cust_id]= b.old_az_cust_id where status='D' OR status='R' OR status='I') then 'Y' else 'N' END as DRI,
+
+	  case when new_Az_id in (select distinct coalesce(b.az_cust_id,a.az_cust_id) as new_Az_id  from [dbo].[l134_r_cust_brd_block_pueblo] a
+	  LEFT join [dbo].[l128_d_old_cust_id_xref] b 
+	  on a.[az_cust_id]= b.old_az_cust_id  where block_type='Legal HR Block List' and agnostic_blk_ind='Y') then 'Y' else 'N' END as Legal
+into #aligned_universe4
+FROM #aligned_universe2_1
+
+----------------------------drops---------------------------------
+
+Select A.* , coalesce (b.[az_cust_id], a.[AZ ID]) as new_Az_id
+into #drop_dummy
+from [AZ_Call_Plan_Discovery].[dbo].[dummy_drop_hcp_pcx_zerofile_PCX] as a
+LEFT join [dbo].[l128_d_old_cust_id_xref] b
+	on a.[AZ ID]= b.old_az_cust_id
+
+	Select * from #drop_dummy
+
+--Select * FROM [AZ_Call_Plan_Discovery].[dbo].[dummy_drop_hcp_pcx_zerofile_PCX]
+drop table #drop_frx_bre
+Select Distinct a.[new_Az_id] ,a.[AZ Territory ID],
+(case when a.[AZ ID]=b.new_Az_id then 1 else 0 end) as drop_hcp
+into #drop_frx_bre from #drop_dummy a
+left join  #aligned_universe2_1 b
+on a.[new_Az_id]=b.new_Az_id
+
+drop table drop_alignment_0
+Select * into #drop_alignment_0 from  #drop_frx_bre where drop_hcp=1
+
+
+Select * from #drop_alignment_0
+
+Select a.new_az_id,a.[AZ Territory ID]  ,
+(case when  a.new_az_id=b.new_Az_id then 1 else 0 end) as blocks_drop
+into #blocks_drop from #drop_alignment_0 a
+left join 
+#aligned_universe4 b on a.new_Az_id=b.new_Az_id
+
+Select * from  #blocks_drop where  blocks_drop =1
+
+-------------------------------------------
+------------------------Specialty---------
+drop table #demog1
+
+select * into #demog1
+from [AZ_Call_Plan_Discovery].[dbo].[l141_lg_reference.hcp_demog]
+drop table #demog
+Select distinct coalesce(b.az_cust_id,a.hcp_az_cust_id) as new_Az_id ,a.customer_subtype,a.specialty_desc  
+into #demog
+from  #demog1 a 
+left join [dbo].[l128_d_old_cust_id_xref] b 
+	  on a.[hcp_az_cust_id]= b.old_az_cust_id 
+--Select top 10* from #demog
+
+
+drop table #cross_spec
+select DISTINCT a3.*,dem.specialty_desc,customer_subtype into #cross_spec
+from #aligned_universe4 a3
+left join #demog dem on a3.new_Az_id=dem.new_Az_id
+
+--Select top 10* from  #cross_spec
+
+-------------------------------------Pueblo Block--------------------------
+ drop table #pueblo1
+ select * into #pueblo1 from [AZ_Call_Plan_Discovery].[dbo].[l134_r_cust_brd_block_pueblo]
+
+ drop table #pueblo
+ Select distinct coalesce(b.az_cust_id,a.az_cust_id) as new_Az_id,block_type,brd_nm,cust_clas,mstr_prod_blk 
+ into #pueblo
+ from #pueblo1 a left join  [dbo].[l128_d_old_cust_id_xref] b 
+	  on a.[az_cust_id]= b.old_az_cust_id 
+
+ drop table #pueblo_frx
+select distinct pd.*,
+	case when pd.new_Az_id  IN (select new_Az_id
+			from #pueblo 
+			where block_type in ('Brand/Specialty Exclusion','HCI Block','Specialty Not Applicable List') and
+			brd_nm in ('FARXIGA') AND mstr_prod_blk='Y')  then 'Y' else 'N' end [PUEBLO FRX],
+     case when pd.new_Az_id  IN (select new_Az_id
+			from #pueblo 
+			where block_type in ('Brand/Specialty Exclusion','HCI Block','Specialty Not Applicable List') and
+			brd_nm in ('BREZTRI AEROSPHERE') AND mstr_prod_blk='Y') 	then 'Y' else 'N' end [PUEBLO BRE]
+
+into #pueblo_frx
+from #cross_spec pd
+
+--select * from #pueblo_bre
+----
+
+drop table #temp1
+Select * into #temp1 from #pueblo_FRX
+/*
+drop table #Publo_Frx_bre
+Select a.new_az_id,a.[AZ Territory ID],
+(case when a.new_az_id =b.new_az_id then 1 else 0 end) as publo_blk
+into  #Publo_Frx_bre
+from #blocks_drop a
+left join #pueblo_frx b on a.new_az_id =b.new_az_id
+
+
+Select * from  #Publo_Frx_bre where publo_blk=0*/
+-----------------------------------freq perc from AM-----------------
+
+DROP TABLE #AM_222_call_freq_perc_50
+Select  coalesce(b.az_cust_id,a.client_physician_id) as new_Az_id,
+max(annual_call_freq_perc_50) as AM_222_call_freq_perc_50
+into #AM_222_call_freq_perc_50 from  [dbo].[l195_AM_s222_0619_data_report_v1] a
+left  join [dbo].[l128_d_old_cust_id_xref] b 
+	  on a.client_physician_id= b.old_az_cust_id group by coalesce(b.az_cust_id,a.client_physician_id) 
+
+--Select * from [dbo].[l195_AM_s222_0619_data_report_v1]
+
+drop table #freq_perc_50
+select a.*,AM_222_call_freq_perc_50
+into #freq_perc_50
+from #temp1 a                                                  
+left join #AM_222_call_freq_perc_50 c on a.[new_az_id]=c.new_Az_id
+
+drop table #tempuni
+Select * into #tempuni from #freq_perc_50
+
+/*
+drop table #freq_perc_50_AM_drop
+Select a.new_az_id,a.[AZ Territory ID],
+(case when a.new_az_id =b.new_az_id then 1 else 0 end) as freq_drop
+into  #freq_perc_50_AM_drop
+from #Publo_Frx_bre a
+left join #tempuni b on a.new_az_id =b.new_az_id
+
+
+Select * from  #freq_perc_50_AM_drop where freq_drop=0*/
+
+---------------------------------------------------------------------------------------------
+DROP TABLE #AM_122_call_freq_perc_50
+Select  coalesce(b.az_cust_id,a.client_physician_id) as new_Az_id,
+max(annual_call_freq_perc_50) as AM_122_call_freq_perc_50
+into #AM_122_call_freq_perc_50 from  [dbo].[l193_AM_s122_0619_data_report_v1] a
+left  join [dbo].[l128_d_old_cust_id_xref] b 
+	  on a.client_physician_id= b.old_az_cust_id group by coalesce(b.az_cust_id,a.client_physician_id) 
+
+--Select * from [dbo].[l193_AM_s222_0619_data_report_v1]
+
+drop table #freq_perc_50_122
+select a.*,AM_122_call_freq_perc_50
+into #freq_perc_50_122
+from #tempuni a
+left join #AM_122_call_freq_perc_50 c on a.[new_az_id]=c.new_Az_id
+
+--select * from #freq_perc_50_122
+
+-------------------------------------------------------------------------------------
+
+drop table #calls_data
+Select left(hcp_az_cust_id,LEN(hcp_az_cust_id)-2) hcp_id,az_funcl_terr_id terr_id,
+call_dt call_date,left(call_dt,10) as date_new 
+into #calls_data
+from [dbo].[l198_raw_calls_data]
+
+--select top 1000* from [dbo].[l198_raw_calls_data]
+
+
+drop table #calls_data1
+Select distinct coalesce(b.az_cust_id,a.hcp_id) as new_Az_id
+,terr_id,call_date,date_new ,
+CONVERT(date,date_new,120) as updated_date
+into #calls_data1
+from #calls_data a
+left join [dbo].[l128_d_old_cust_id_xref] b 
+	  on a.[hcp_id]= b.old_az_cust_id 
+--select * from #calls_data1
+
+
+drop table #calls_6_months_Aug_22_to_Jan_23
+Select new_Az_id,terr_id,
+count (distinct updated_date) calls 
+into #calls_6_months_Aug_22_to_Jan_23
+from #calls_data1
+where cast(updated_date as date) between '2022-08-01'  AND '2023-01-31'
+group by new_Az_id,terr_id
+
+drop table #new_calls_data
+Select a.*,
+isnull(b.tot_calls,0) AZ_6_months_Calls_Aug_22_Jan_23
+into #new_calls_data
+from #freq_perc_50_122  a 
+left join (Select new_Az_id,MAX(calls) tot_calls  from 
+#calls_6_months_Aug_22_to_Jan_23  group by new_Az_id) b
+on a.[new_az_id]=b.new_Az_id
+
+--Select * from #new_calls_data
+
+DROP TABLE #new_calls_data1
+Select * into #new_calls_data1 from #new_calls_data
+delete from #new_calls_data1 where [NEW_AZ_ID] like '%ENC%'
+
+----------------------------------Geo Func Terr---------------------------------
+
+drop table #iat1
+Select * 
+into #iat1
+from [AZ_Call_Plan_Discovery].[dbo].[l209_AZ_IAT_CUST_ADDR_TEAM_04192023]
+
+select * from [AZ_Call_Plan_Discovery].[dbo].[l209_AZ_IAT_CUST_ADDR_TEAM_04192023]
+--Select top 10* from #iat1
+drop table #iat
+Select coalesce (b.[az_cust_id], a.[cust_id]) as new_Az_id, zip as ZIP into #iat 
+from #iat1 a LEFT join [dbo].[l128_d_old_cust_id_xref] b
+	on a.[cust_id]= b.old_az_cust_id
+where a.team_nm in ('PCx_1','PCx_2','PCx_3')
+
+
+drop table #iat2
+Select * 
+into #iat2
+from [AZ_Call_Plan_Discovery].[dbo].[l200_d_cust_addr]
+
+--Select top 10* from #iat2
+drop table #iat3
+Select coalesce (b.[az_cust_id], a.[az_cust_id]) as new_Az_id, zip as ZIP into #iat3
+from #iat2 a LEFT join [dbo].[l128_d_old_cust_id_xref] b
+on a.[az_cust_id]= b.old_az_cust_id
+where a.del_ind='N' and a.addr_typ_cd in ('IAT','INCNTV','CALL','COMN')
+
+drop table #iat4
+Select distinct new_Az_id, zip into #iat4 from #iat union 
+Select distinct new_Az_id, zip  from #iat3
+
+--Select * from #iat3 where ZIP is NULL
+
+--Select top 10*	from #iat1
+--select count(distinct new_Az_id)  from #iat4
+
+drop table #univ_hcps
+select Distinct new_Az_id into #univ_hcps from #new_calls_data1
+ 
+drop table #hcp_zip_1
+select Distinct t.[new_Az_id], zip as ZIP
+into #hcp_zip_1
+from #univ_hcps t 
+left join #iat4 iat on t.new_Az_id = iat.new_Az_id  
+
+
+
+drop table #geo
+SELECT  Right('00000' + convert(nvarchar, zip_cd), 5) AS zip_id
+      ,[az_geo_id]
+      ,[aligt_list_id]
+      ,[natl_az_geo_id]
+      ,[data_dt]
+      ,[cycl_id]
+      ,[aligt_list_desc]
+      ,[chld_az_funcl_terr_id]
+      ,[chld_az_geo_id]
+      ,[chld_aligt_list_id]
+      ,[par_az_funcl_terr_id]
+      ,[chld_funcl_terr_nm]
+      ,[chld_funcl_terr_lvl_cd]
+      ,[chld_funcl_terr_lvl_role]
+      ,[chld_team_nm]
+      ,[chld_team_desc]
+      ,[chld_aligt_list_desc]
+      ,[natl_az_funcl_terr_id]
+      ,[natl_az_geo_id 1]
+      ,[data_dt 1]
+      ,[cycl_id 1]
+      ,[chld_az_team_id]
+into #geo FROM [AZ_Call_Plan_Discovery].[dbo].[l191_Geo_zip_FuncTerr Mapping]
+
+
+
+
+
+-------------------------------------------------------------------------
+--SELECT count(*) FROM #hcp_zip_terr11
+--SELECT distinct  zip_id FROM #geo
+--WHERE len(zip_id) < 5
+
+
+drop table #hcp_zip_terr11
+select distinct hz.[new_Az_id],geo.chld_az_funcl_terr_id terr_id, geo.chld_az_geo_id Geo_ID, geo.aligt_list_desc team
+into #hcp_zip_terr11
+from #hcp_zip_1 hz
+left join #geo geo on hz.ZIP = geo.zip_id 
+
+--Select distinct team_nm from #hcp_zip_terr11 where terr_id is NULL
+
+drop table #hcp_zip_terr22
+select Distinct hz.new_Az_id,case when hz.team ='PCX_1' and terr_id is not NULL then 1 else 0 end as New_PCX1,
+case when hz.team='PCX_2' and terr_id is not NULL then 1 else 0 end as New_PCX2,
+case when hz.team='PCX_3' and terr_id is not NULL then 1 else 0 end as New_PCX3
+into #hcp_zip_terr22
+from #hcp_zip_terr11 hz
+
+Drop table #hcp_zip_terr3 
+Select  new_az_id,max(New_PCX1) as New_PCX1,max(New_PCX2) as New_PCX2,max(New_PCX3) as New_PCX3
+into #hcp_zip_terr3 
+from #hcp_zip_terr22
+group by  new_az_id
+
+drop table #temp4
+Select distinct t.*,zt.New_PCX1,zt.New_PCX2,zt.New_PCX3 into #temp4 
+from #new_calls_data1 t
+left join #hcp_zip_terr3 zt on t.new_az_id=zt.new_az_id
+
+Drop table #uni_1
+Select * into #uni_1 from #temp4
+
+
+drop table #rst1
+Select * into #rst1  FROM [AZ_Call_Plan_Discovery].[dbo].[l35_2022-11-30 Q1'23 RST National Call Plan Workbook v1.0]
+drop table #cv1
+Select * into #cv1 FROM [AZ_Call_Plan_Discovery].[dbo].[l11_2022-11-23 Q1'23 CV National Call Plan v1]
+drop table #r_rms1
+Select * into #r_rms1 FROM [AZ_Call_Plan_Discovery].[dbo].[l17_2022-11-29 Q1'23 R_RMS National Call Plan_v1]
+drop table #r_ras1
+Select * into #r_ras1 FROM [AZ_Call_Plan_Discovery].[dbo].[l16_2022-11-29 Q1'23 R_RAS National Call Plan_v1]
+
+Drop table #cv
+Select distinct coalesce (b.[az_cust_id],a.[hcp az id]) as new_Az_id ,a.[Product Name 1] ,a.[Product Name 2]
+into #cv from #cv1 a
+LEFT join [dbo].[l128_d_old_cust_id_xref] b
+	on a.[hcp az id]= b.old_az_cust_id
+
+
+Drop table #cv2
+Select distinct new_Az_id, 1 as in_CVSpec into #cv2 from #cv a
+where (a.[Product Name 1]= 'Farxiga'  or a.[Product Name 2] = 'Farxiga' )
+
+
+Drop table #rst
+Select distinct coalesce (b.[az_cust_id],a.[Physician AZ ID]) as new_Az_id ,a.[Product 1] 
+into #rst from #rst1 a
+LEFT join [dbo].[l128_d_old_cust_id_xref] b
+	on a.[Physician AZ ID]= b.old_az_cust_id
+
+
+Drop table #rst2
+Select distinct new_Az_id,1 as in_RST into #rst2 from #rst rt 
+where (rt.[Product 1]= 'BREZTRI AEROSPHERE' )
+
+Drop table #ras
+Select distinct coalesce (b.[az_cust_id],a.[AZ ID]) as new_Az_id ,a.[Product Name 1], a.[Product Name 2]
+into #ras from #r_ras1 a
+LEFT join [dbo].[l128_d_old_cust_id_xref] b
+	on a.[AZ ID]= b.old_az_cust_id
+
+
+Drop table #ras2
+Select distinct [new_Az_id], 1 as in_RAS into #ras2 from #ras rs 
+where (rs.[Product Name 1]= 'Farxiga'  or rs.[Product Name 2] = 'Farxiga' )
+
+Drop table #rms
+Select distinct coalesce (b.[az_cust_id],a.[AZ ID]) as new_Az_id ,a.[Product Name 1], a.[Product Name 2]
+into #rms from #r_rms1 a
+LEFT join [dbo].[l128_d_old_cust_id_xref] b
+	on a.[AZ ID]= b.old_az_cust_id
+
+Drop table #rms2
+Select distinct [new_Az_id], 1 as in_RMS into #rms2 from #rms rm 
+where (rm.[Product Name 1]= 'Farxiga'  or rm.[Product Name 2] = 'Farxiga')
+--Select * from #rms2
+
+Drop table #overlap_cvramst
+Select distinct un1.*,a.in_RST,b.in_CVSpec,c.in_RAS,d.in_RMS
+into #overlap_cvramst from #uni_1 un1 
+left join #rst2 a on un1.[new_az_id]=a.[new_Az_id]
+left join #cv2 b on un1.[new_az_id]=b.[new_Az_id]
+left join #ras2 c on un1.[new_az_id]=c.[new_Az_id] 
+left join #rms2 d on un1.[new_az_id]=d.[new_Az_id]
+
+
+drop table #temp5
+Select distinct t4.*,oc.In_CVSPEC,oc.In_RST,oc.in_RMS,oc.in_RAS into #temp5 from #temp4 t4
+left join  #overlap_cvramst oc on  t4.[new_az_id]=oc.[new_Az_id]
+
+drop table #temp6
+Select * into #temp6 from #temp5
+
+Drop table #nppa_bre
+Select distinct  [new_az_id] into #nppa_bre from #temp6 
+where specialty_desc in ('NURSE PRACTITIONER','PHYSICIAN ASSISTANT') and customer_subtype in ('NP','PA')
+and [Bre_priority] in ('T3 - Orange','T4 - Red')
+
+Drop table #t1t2_bre
+Select distinct  [new_az_id] into #t1t2_bre from #temp6 
+where [Bre_priority] in ('T1 - Green','T1 Plus - Purple','T2 - Yellow')
+
+--Select * from #iat
+drop table #nppa_bre_zip
+select distinct [new_az_id], CONCAT([addr_line_1],[zip]) as addressid
+into #nppa_bre_zip
+from #nppa_bre t
+inner join #iat1 a on t.[new_az_id] = a.cust_id
+where a.team_nm in('PCx_2','PCx_3')
+
+--Select * from #t1t2_bre
+
+Drop table #nppa_t1t2_zip
+select distinct [new_az_id], concat([addr_line_1],[zip]) as addressid
+into #nppa_t1t2_zip
+from #t1t2_bre t 
+inner join #iat1 a on t.[new_az_id] = a.cust_id 
+where a.team_nm in('PCx_2','PCx_3')
+
+
+Drop table #nppa_bre_col
+--Select * from  #nppa_t1t2_zip
+select distinct [new_az_id], 1 as bre_colocated
+into #nppa_bre_col
+from #nppa_bre_zip
+where addressid in (select distinct addressid from #nppa_t1t2_zip)
+
+-----------------------------------Farxiga-------------------------------
+
+Drop table #nppa_frx
+Select distinct  [new_az_id] into #nppa_frx from #temp6 
+where specialty_desc in ('NURSE PRACTITIONER','PHYSICIAN ASSISTANT') and customer_subtype in ('NP','PA')
+and [frx_priority] in ('No Priority')
+
+Drop table #p1p2_frx
+Select distinct  [new_az_id] into #p1p2_frx from #temp6 
+where [frx_priority] in ('1. Priority 1','2. Priority 2')
+
+--Select cust_id  from #iat1
+drop table #nppa_frx_zip
+select distinct [new_az_id], CONCAT([addr_line_1],[zip]) as addressid
+into #nppa_frx_zip
+from #nppa_frx t
+inner join #iat1 a on t.[new_az_id] = a.cust_id 
+where a.team_nm in('PCx_1')
+
+--Select * from #nppa_frx
+Drop table #nppa_p1p2_zip
+select distinct[new_az_id], concat([addr_line_1],[zip]) as addressid
+into #nppa_p1p2_zip
+from #p1p2_frx t 
+inner join #iat1 a on t.[new_az_id] = a.cust_id 
+where a.team_nm in('PCx_1')
+
+Drop table #nppa_frx_col
+select distinct [new_az_id], 1 as frx_colocated
+into #nppa_frx_col
+from #nppa_frx_zip
+where addressid in (select distinct addressid from #nppa_p1p2_zip)
+
+Drop table #temp7
+Select t6.* ,brc.bre_colocated,frc.frx_colocated into #temp7 from  #temp6 t6
+left join #nppa_bre_col brc on t6.[new_Az_id]=brc.[new_az_id]
+left join #nppa_frx_col frc  on t6.[new_Az_id]=frc.[new_az_id]
+
+--Select * from #temp7 where bre_colocated=1
+drop table #temp8
+Select * into #temp8 from #temp7
+
+--Select * from #temp8
+drop table #temp9
+Select t8.*,
+case when (t8.specialty_desc in ('ALLERGY & IMMUNOLOGY','ALLERGY & IMMUNOLOGY - ALLERGY',
+'ALLERGY & IMMUNOLOGY - CLINICAL & LABORATORY IMMUNOLOGY','INTERNAL MEDICINE - SLEEP MEDICINE',
+'INTERNAL MEDICINE - CRITICAL CARE MEDICINE','INTERNAL MEDICINE - PULMONARY DISEASE',
+'OTOLARYNGOLOGY','OTOLARYNGOLOGY - FACIAL PLASTIC SURGERY','OTOLARYNGOLOGY - OTOLOGY & NEUROTOLOGY',
+'OTOLARYNGOLOGY - PLASTIC SURGERY WITHIN THE HEAD & NECK')) then 1 else 0 end as  Bre_spec,
+case when (t8.specialty_desc in ('INTERNAL MEDICINE - CARDIOVASCULAR DISEASE','INTERNAL MEDICINE - NEPHROLOGY',
+'INTERNAL MEDICINE - ENDOCRINOLOGY, DIABETES & METABOLISM','INTERNAL MEDICINE - INTERVENTIONAL CARDIOLOGY',
+'INTERNAL MEDICINE - CLINICAL CARDIAC ELECTROPHYSIOLOGY','THORACIC SURGERY (CARDIOTHORACIC VASCULAR SURGERY)'))
+then 1 else 0 end as Frx_spec
+into #temp9
+from #temp8 t8
+
+--Select * from #temp9
+drop table #drp_chk
+Select * into #drp_chk FROM [AZ_Call_Plan_Discovery].[dbo].[dummy_Q422 Drop List]
+
+
+Drop table #temp10
+Select t9.*,
+case when t9.[new_az_id]=d9.[Target_id] then 1 else 0 end as Q4_Drop
+into #temp10 from #temp9 t9 left join
+#drp_chk d9 on t9.[new_az_id]=d9.[Target_id]
+
+
+drop table #temp11
+Select * into #temp11 from #temp10
+
+ ---------------------------------------------------Update Null ---------------------
+
+ Update #temp11 
+Set PCx_1_call_plan = 0
+where PCx_1_call_plan IS NULL 
+
+Update #temp11 
+Set PCx_23_call_plan = 0
+where PCx_23_call_plan IS NULL 
+
+Update #temp11 
+Set in_BRE_seg= 0
+where in_BRE_seg IS NULL 
+
+Update #temp11 
+Set Bre_spec_grp = 'Not Available'
+where Bre_spec_grp IS NULL 
+
+Update #temp11 
+Set Bre_priority = 'NA'
+where Bre_priority IS NULL 
+
+
+Update #temp11 
+Set in_frx_seg= 0
+where in_frx_seg IS NULL 
+
+
+
+Update #temp11 
+Set FRX_spec_group = 'Not Available'
+where FRX_spec_group IS NULL
+
+Update #temp11 
+Set frx_priority = 'NA'
+where frx_priority IS NULL
+
+Update #temp11 
+Set AM_222_call_freq_perc_50 = 0
+where AM_222_call_freq_perc_50 IS NULL
+
+Update #temp11 
+Set AM_122_call_freq_perc_50 = 0
+where AM_122_call_freq_perc_50 IS NULL
+
+Update #temp11 
+Set AZ_6_months_Calls_Aug_22_Jan_23 = 0
+where AZ_6_months_Calls_Aug_22_Jan_23 IS NULL
+
+Update #temp11 
+Set New_PCX1= 0
+where New_PCX1 IS NULL
+
+
+Update #temp11 
+Set New_PCX2= 0
+where New_PCX2 IS NULL
+
+Update #temp11 
+Set New_PCX3= 0
+where New_PCX3 IS NULL
+
+Update #temp11 
+Set In_CVSPEC= 0
+where In_CVSPEC IS NULL
+
+Update #temp11 
+Set In_RST= 0
+where In_RST IS NULL
+
+Update #temp11 
+Set in_RMS= 0
+where in_RMS IS NULL
+
+Update #temp11 
+Set in_RAS= 0
+where in_RAS IS NULL
+
+Update #temp11 
+Set bre_colocated= 0
+where bre_colocated IS NULL
+
+Update #temp11 
+Set frx_colocated = 0
+where frx_colocated IS NULL
+
+Update #temp11 
+Set specialty_desc = 'NA'
+where specialty_desc IS NULL 
+
+Update #temp11 
+Set customer_subtype = 'Not Applicable'
+where customer_subtype IS NULL
+
+
+--Select distinct specialty_desc from #temp11
+drop table #temp12
+Select [new_Az_id],specialty_desc,customer_subtype,PCx_1_call_plan,PCx_23_call_plan,in_BRE_seg,Bre_spec_grp,Bre_priority,	
+in_frx_seg,	FRX_spec_group,	frx_priority, kaiser,	[NO SEE],	DRI,	Legal,	[PUEBLO FRX],	[PUEBLO BRE],	
+AM_222_call_freq_perc_50,AM_122_call_freq_perc_50,	AZ_6_months_Calls_Aug_22_Jan_23,	New_PCX1,	New_PCX2,	
+New_PCX3,	In_CVSPEC,	in_RMS,	in_RAS,	In_RST,bre_colocated,	frx_colocated,	Bre_spec,	Frx_spec,	Q4_Drop into #temp12 from #temp11
+
+--Select count(*) from #temp11
+--Select * from #temp12
+drop table #temp14
+Select * into #temp14 from #temp12
+
+drop table #temp13
+Select new_Az_id,
+case when (PCx_1_call_plan)>=(PCx_23_call_plan) then (PCx_1_call_plan) 
+	when (PCx_23_call_plan)>=(PCx_1_call_plan) then (PCx_23_call_plan)
+	ELSE    PCx_1_call_plan
+end as INCP,
+Case when In_CVSPEC >=in_RAS AND  In_CVSPEC >= in_RMS then In_CVSPEC
+	when in_RAS >=In_CVSPEC and  in_RAS >= in_RMS then in_RAS
+	WHEN in_RMS >= In_CVSPEC and in_RMS >= in_RAS THEN in_RMS
+ELSE In_CVSPEC
+End as INCVRM,
+CASE WHEN Bre_spec_grp in ('ALLs','ENTs','PULMs') then 1 
+    when Bre_spec_grp in ('Not Available') then Bre_spec
+	else 0
+end as [BRE SPEC CHK],
+CASE WHEN FRX_spec_group in ('ENDOs','NEPH','CARDs') then 1 
+    when FRX_spec_group in ('Not Available') then frx_spec
+	else 0
+end as [FRX SPEC CHK],
+Case when (PCx_1_call_plan)>=in_frx_seg then  PCx_1_call_plan
+	when  in_frx_seg >= (PCx_1_call_plan) then in_frx_seg
+	else 0
+	end as [FRX Universe],
+Case when (PCx_23_call_plan)>=in_BRE_seg then  PCx_23_call_plan
+	when  in_BRE_seg >= (PCx_23_call_plan) then in_BRE_seg
+	else 0
+	end as [BRE Universe], 
+Case when kaiser='Y'  or [NO SEE] ='Y' or DRI ='Y' or Legal='Y' or [PUEBLO FRX]='Y' then  1
+	else 0
+	end as [FRX Block],
+Case when kaiser='Y'  or [NO SEE] ='Y' or DRI ='Y' or Legal='Y' or [PUEBLO BRE]='Y' then  1
+	else 0
+	end as [BRE Block]
+into #temp13  from #temp14
+
+
+--Select * from #temp14
+drop table #temp15
+Select a.*,b.INCP,b.INCVRM,b.[BRE SPEC CHK],b.[FRX SPEC CHK],b.[FRX Universe],b.[BRE Universe],b.[FRX Block],b.[BRE Block]
+into #temp15 from #temp14 a left join #temp13 b on a.new_Az_id=b.new_Az_id
+
+--Select * from #pre_ref
+drop table  #pre_ref 
+Select *, ISNULL(od.az_cust_id,a.[AZ ID]) new_az_id 
+into #pre_ref from  [dbo].[PCx_May_2023_Effective_CP] a
+LEFT join [AZ_Call_Plan_Discovery].[dbo].[l128_d_old_cust_id_xref] od
+on a.[AZ ID]= od.old_az_cust_id;
+
+drop table  #pre_ref2
+Select b.new_az_id, max(case when  b.[Product 1] ='Farxiga' or b.[Product 2]= 'Farxiga' then 1 else 0 end)as [IN FRX Q2 CP],
+max(case when b.[Product 1]='BREZTRI AEROSPHERE' or b.[Product 2]= 'BREZTRI AEROSPHERE' then 1 else 0 end) as [IN BRE Q2 CP]
+into #pre_ref2 from #pre_ref b 
+group by new_az_id
+
+
+drop table #temp16
+Select distinct a.*,b.[IN FRX Q2 CP],b.[IN BRE Q2 CP]
+into #temp16 from #temp15 a 
+left join #pre_ref2 b on a.new_Az_id=(b.new_az_id)
+
+
+--Select * from #temp16
+drop table #temp17
+Select new_Az_id,MAX(CASE when New_PCX1='1' or New_PCX2='1' or New_PCX3='1' then 1 else 0 end) 
+as [Has Alignment],
+MAX(CASE when [IN FRX Q2 CP]='1' or [IN BRE Q2 CP]='1' then 1 else 0 end) as [IN PCX Q2 CP]
+into #temp17
+from #temp16
+group by new_Az_id
+
+--Select * from #temp16
+drop table #temp18
+Select a.* ,b.[Has Alignment],b.[IN PCX Q2 CP]  into #temp18  from #temp16 a
+left join #temp17  b on  a.new_Az_id=b.new_Az_id
+
+drop table #temp19
+Select new_Az_id,
+Max(case when [FRX Universe]='1' AND [FRX Block]='0' AND Q4_Drop='0' AND [Has Alignment]='1' then 1 else 0 end) as [FRX Eligible],
+Max(case when [BRE Universe]='1' AND [BRE Block]='0' AND Q4_Drop='0' AND [Has Alignment]='1' then 1 else 0 end) as [BRE Eligible]
+into #temp19 from #temp18
+group by new_Az_id
+
+
+drop table #temp20
+Select a.* ,b.[FRX Eligible],b.[BRE Eligible]  into #temp20  from #temp18 a
+left join #temp19  b on  a.new_Az_id=b.new_Az_id
+
+--Select * from #temp20
+drop table #temp21
+Select new_Az_id,
+Max(case when [FRX Eligible]='1' or [BRE Eligible]='1' then 1 else 0 end) as [FRX/BRE Eligible]
+into #temp21 from #temp20
+group by new_Az_id
+
+
+--Select * from #temp22
+drop table #temp22
+Select a.* ,b.[FRX/BRE Eligible]  into #temp22  from #temp20 a
+left join #temp21  b on  a.new_Az_id=b.new_Az_id
+
+
+drop table #temp23
+Select new_Az_id,
+Max(case when PCx_1_call_plan='1' AND [FRX SPEC CHK]='1'  AND INCVRM='0' then 0 
+	when [FRX Eligible]='1'  then 1 else 0  end) as  [FRX After OVLP Keep] ,
+Max(case when PCx_23_call_plan='1' AND [BRE SPEC CHK]='1'  AND in_RST='0' then 0 
+	when [BRE Eligible]='1'  then 1 else 0  end) as  [BRE After OVLP Keep] 
+into #temp23 from #temp22
+group by new_Az_id
+
+--Select * from #temp24
+drop table #temp24
+Select a.* ,b.[FRX After OVLP Keep],b.[BRE After OVLP Keep]  into #temp24  from #temp22 a
+left join #temp23  b on  a.new_Az_id=b.new_Az_id
+
+
+drop table #temp25
+Select new_Az_id,
+Max(case when [FRX After OVLP Keep]='1' or [BRE After OVLP Keep]='1'   then 1 else 0  end) as  [AFTER FSIP] 
+into #temp25 from #temp24
+group by new_Az_id
+
+
+drop table #temp26
+Select a.* ,b.[AFTER FSIP]  into #temp26  from #temp24 a
+left join #temp25  b on  a.new_Az_id=b.new_Az_id
+
+Drop table #temp27
+Select new_Az_id,(AZ_6_months_Calls_Aug_22_Jan_23*2) as [Annual Az calls] ,(AM_222_call_freq_perc_50*1) as [Annualised access monitor] 
+into #temp27 from #temp26
+
+
+drop table #temp28
+Select a.* ,b.[Annual Az calls],b.[Annualised access monitor]  into #temp28  from #temp26 a
+left join #temp27  b on  a.new_Az_id=b.new_Az_id
+--Select * from #temp28
+
+
+drop table #temp29
+Select new_Az_id,
+Max(case when PCx_1_call_plan='1' AND [FRX After OVLP Keep]='1' then
+			(case when [Annualised access monitor]>'3' then 1
+			else
+				(case when frx_priority='2. Priority 2' Or frx_priority='1. Priority 1' then 
+			          (case when [Annual Az calls]>'0'  then 1 else 0 end )
+			     else 
+					  (case when [Annual Az calls]>'3' then 1  else 0 end )
+				end)
+			end)
+	else 0 end ) as [FRX target Access] ,
+
+Max(case when PCx_1_call_plan='0' AND [FRX After OVLP Keep]='1' then
+			(case when [Annualised access monitor]>'3' then 1
+			else
+				(case when frx_priority='1. Priority 1' then 
+			          (case when [Annual Az calls]>'0'  then 1 else 0 end )
+			     else 
+					  (case when [Annual Az calls]>'3' then 1  else 0 end )
+				end)
+			end)
+	else 0 end ) as [FRX Non target Access] ,
+
+
+Max(case when PCx_23_call_plan='1' AND [BRE After OVLP Keep] ='1' then
+			(case when [Annualised access monitor]>'3' then 1
+			else
+				(case when Bre_priority='T1 Plus - Purple' OR Bre_priority='T1 - Green'  OR Bre_priority='T2 - Yellow' then 
+			          (case when [Annual Az calls]>'0'  then 1 else 0 end )
+			     else 
+					  (case when [Annual Az calls]>'3' then 1  else 0 end )
+				end)
+			end)
+	else 0 end ) as [BRE target Access] ,
+
+Max(case when PCx_23_call_plan='0' AND [BRE After OVLP Keep]='1' then
+			(case when [Annualised access monitor]>'3' then 1
+			else
+				(case when Bre_priority='T1 Plus - Purple' OR Bre_priority='T1 - Green'  then 
+			          (case when [Annual Az calls]>'0'  then 1 else 0 end )
+			     else 
+					  (case when [Annual Az calls]>'3' then 1  else 0 end )
+				end)
+			end)
+	else 0 end ) as [BRE Non target Access] 
+into #temp29 from  #temp28
+group by new_Az_id
+
+
+drop table #temp30
+Select a.* ,b.[FRX target Access],b.[FRX Non target Access],b.[BRE target Access],b.[BRE Non target Access]  into #temp30  from #temp28 a
+left join #temp29  b on  a.new_Az_id=b.new_Az_id
+--Select * from #temp30
+
+drop table #temp31
+Select new_Az_id,
+Max(case when  [FRX After OVLP Keep]='0' then 0
+			
+			else
+				(case when [Annualised access monitor]>'4' then 1
+			     else 
+					  (case when [FRX target Access]>=[FRX Non Target Access]  then [FRX Target Access]  else [FRX Non Target Access] end )
+				end)
+			end ) as [FRX After Access] ,
+
+Max(case when  [BRE After OVLP Keep]='0' then 0
+			
+			else
+				(case when [Annualised access monitor]>'4' then 1
+			     else 
+					  (case when [BRE target Access]>=[BRE Non target Access]  then [BRE target Access]  else [BRE Non target Access] end )
+				end)
+			end ) as [BRE After Access] 
+into #temp31 from #temp30
+group by new_Az_id
+
+
+drop table #temp32
+Select a.* ,b.[FRX After Access],b.[BRE After Access]  into #temp32  from #temp30 a
+left join #temp31  b on  a.new_Az_id=b.new_Az_id
+Select * from #temp32
+
+drop table #temp33
+Select new_Az_id,
+(case when  [FRX After Access]>=[BRE After Access] then [FRX After Access] else [BRE After Access]
+			end ) as [After Accessible] 
+ into #temp33 from #temp32
+--group by new_Az_id
+
+--Select * from #temp34
+drop table #temp34
+Select a.* ,b.[After Accessible]  into #temp34  from #temp32 a
+left join #temp33  b on  a.new_Az_id=b.new_Az_id
+
+drop table #temp35
+Select new_Az_id,
+Max(case when  [FRX After OVLP Keep]='0' then 0
+			else
+				(case when [Annualised access monitor]>'3' or [Annual Az calls]>'3' then 1
+			     else  0
+				 end )
+			end ) as [FRX After Access Old] ,
+
+Max(case when  [BRE After OVLP Keep]='0' then 0
+			else
+				(case when [Annualised access monitor]>'3' or [Annual Az calls]>'3' then 1
+			     else  0
+				 end )
+			end ) as [BRE After Access Old] 
+into #temp35 from #temp34
+group by new_Az_id
+
+
+drop table #temp36
+--Select * from #temp36
+Select a.* ,b.[FRX After Access Old],b.[BRE After Access Old]  into #temp36  from #temp34 a
+left join #temp35  b on  a.new_Az_id=b.new_Az_id
+
+
+drop table #temp37
+Select new_Az_id,
+(case when  [FRX After Access old]>=[BRE After Access old] then [FRX After Access old] else [BRE After Access old]
+			end ) as [After Accessible old] 
+ into #temp37 from #temp36
+
+
+--Select * from #temp38
+
+--Select Sum([FRX Spec Chk]) from #temp38
+drop table #temp38
+Select a.* ,b.[After Accessible old] into #temp38  from #temp36 a
+left join #temp37  b on  a.new_Az_id=b.new_Az_id
+
+/*drop table #temp34
+Select a.* ,b.[After Accessible]  into #temp34  from #temp32 a
+left join #temp33  b on  a.new_Az_id=b.new_Az_id*/
+
+drop table #temp39
+Select new_Az_id,
+(case when  [PCx_1_call_plan]='1'  AND [FRX SPEC CHK]='1' AND [FRX Eligible]='1' AND INCVRM='1'
+then 1
+			else
+				[FRX After Access]
+		end ) as [FRX Final Access] ,
+
+(case when  [PCx_23_call_plan]='1' AND [BRE SPEC CHK]='1' AND [BRE Eligible]='1' AND in_RST='1' then 1
+			else
+				[BRE After Access]
+			end ) as [BRE Final Access] 
+into #temp39 from #temp38
+--group by new_Az_id
+
+--Select sum([BRE Final Access]) from #temp39
+drop table #temp40
+Select a.* ,b.[FRX Final Access],b.[BRE Final Access]  into #temp40  from #temp38 a
+left join #temp39  b on  a.new_Az_id=b.new_Az_id
+
+--Select * from #temp38
+
+
+Drop table #temp41
+Select new_Az_id,
+(case when  [FRX Eligible]='1'  AND [IN FRX Q2 CP]='1' 
+then 1
+			else
+				[FRX Final Access]
+		end ) as [FRX Universe Access] ,
+
+(case when [BRE Eligible]='1'  AND  [IN BRE Q2 CP]='1'  then 1
+			else
+				[BRE Final Access]
+			end ) as [BRE Universe Access]
+into #temp41 from #temp40
+--group by new_Az_id
+
+
+drop table #temp42
+Select a.* ,b.[FRX Universe Access],b.[BRE Universe Access]  into #temp42  from #temp40 a
+left join #temp41 b on  a.new_Az_id=b.new_Az_id
+
+--Select sum([BRE Universe Access]) from #temp42
+--Select * from #temp42 -----------------------------------Final Table-------------
+
+--Select * from #temp42 where [FRX Universe Access]='1' 
+
+------------------------------------New---------------------------------------------
+DROP TABLE #FRXUNIVERSE
+Select DISTINCT [new_Az_id] INTO #FRXUNIVERSE from #temp42 where [FRX Universe Access]='1' 
+----------------------------------------------------------------------------------------
+/*drop table #FRXUNIVERSE_drop
+Select a.new_az_id,a.[AZ Territory ID],
+(case when a.new_az_id =b.new_az_id then 1 else 0 end) as  FRX_drop
+into  #FRXUNIVERSE_drop 
+from #Publo_Frx_bre a
+left join #FRXUNIVERSE b on a.new_az_id =b.new_az_id
+
+
+Select *  into #frx_drop_access from #FRXUNIVERSE_drop where FRX_drop=1*/
+
+
+
+---------------------------------------------------------------------------------------------
+drop table #GEOPCX1
+select *
+into #GEOPCX1
+from #geo
+WHERE chld_team_nm IN ('PCx_1')
+
+
+drop table #iat12
+Select DISTINCT coalesce (b.[az_cust_id], a.[cust_id]) as new_Az_id, C.chld_az_funcl_terr_id TERR_ID into #iat12
+from [AZ_Call_Plan_Discovery].[dbo].[l199_AZ_IAT_CUST_ADDR_TEAM_01162023] a 
+LEFT join [dbo].[l128_d_old_cust_id_xref] b
+	on a.[cust_id]= b.old_az_cust_id
+LEFT JOIN #GEOPCX1 AS C
+ON A.ZIP=C.zip_id
+where a.team_nm in ('PCx_1','PCx_2','PCx_3')
+
+--SELECT TOP 100* FROM #d_cust_addr
+
+--SELECT TOP 100* FROM #iat12
+
+drop table #d_cust_addr
+SELECT DISTINCT coalesce(b.az_cust_id, a.az_cust_id) as new_az_id,addr_typ_cd,C.chld_az_funcl_terr_id TERR_ID
+into #d_cust_addr
+from [AZ_Call_Plan_Discovery].[dbo].[l200_d_cust_addr] a
+LEFT join [AZ_Call_Plan_Discovery].[dbo].[l128_d_old_cust_id_xref] b
+on a.az_cust_id = b.old_az_cust_id
+LEFT JOIN #GEOPCX1 AS C
+ON A.ZIP=C.zip_id
+where a.del_ind='N' and a.addr_typ_cd in ('IAT','INCNTV','CALL','COMN')
+
+
+Drop table #FRX_uni_tab       
+Select Distinct a.new_Az_id, b.terr_id into #FRX_uni_tab from #FRXUNIVERSE a left join #iat12 b on a.new_Az_id=b.new_Az_id
+
+Drop table #FRX_IAT_PRE       
+SELECT DISTINCT new_Az_id, terr_id INTO #FRX_IAT_PRE FROM #FRX_uni_tab WHERE TERR_ID IS NOT NULL
+
+DROP TABLE #FRX_IAT_ABS
+Select * INTO #FRX_IAT_ABS from #FRX_uni_tab 
+where new_Az_id not in (select distinct new_Az_id FROM #FRX_IAT_PRE)
+
+
+drop table #FRX_CUST_IAT
+Select distinct A.new_Az_id,b.terr_id into #FRX_CUST_IAT 
+from #FRX_IAT_ABS a left join  (SELECT DISTINCT * FROM #d_cust_addr WHERE addr_typ_cd in ('IAT')) b
+on a.new_Az_id=b.new_az_id 
+
+
+Drop table #FRX_INCNTV_PRE       
+SELECT DISTINCT new_Az_id, terr_id INTO #FRX_INCNTV_PRE FROM #FRX_CUST_IAT WHERE TERR_ID IS NOT NULL
+
+DROP TABLE #FRX_INCNTV_ABS
+Select * INTO #FRX_INCNTV_ABS from #FRX_CUST_IAT 
+where new_Az_id not in (select distinct new_Az_id FROM  #FRX_INCNTV_PRE )
+
+
+drop table #FRX_CUST_INCNTV
+Select distinct A.new_Az_id,b.terr_id into #FRX_CUST_INCNTV
+from #FRX_INCNTV_ABS a left join  (SELECT DISTINCT * FROM #d_cust_addr WHERE addr_typ_cd in ('INCNTV')) b
+on a.new_Az_id=b.new_az_id 
+
+
+Drop table #FRX_CALL_PRE       
+SELECT DISTINCT new_Az_id, terr_id INTO #FRX_CALL_PRE FROM #FRX_CUST_INCNTV WHERE TERR_ID IS NOT NULL
+
+DROP TABLE #FRX_CALL_ABS
+Select * INTO #FRX_CALL_ABS from #FRX_CUST_INCNTV
+where new_Az_id not in (select distinct new_Az_id FROM  #FRX_CALL_PRE )
+
+--SELECT * FROM  #FRX_CALL_ABS
+
+drop table #FRX_CUST_CALL
+Select distinct A.new_Az_id,b.terr_id into #FRX_CUST_CALL
+from #FRX_CALL_ABS a left join  (SELECT DISTINCT * FROM #d_cust_addr WHERE addr_typ_cd in ('CALL')) b
+on a.new_Az_id=b.new_az_id 
+
+
+Drop table #FRX_COMN_PRE       
+SELECT DISTINCT new_Az_id, terr_id INTO #FRX_COMN_PRE   FROM #FRX_CUST_CALL WHERE TERR_ID IS NOT NULL
+
+DROP TABLE #FRX_COMN_ABS
+Select * INTO #FRX_COMN_ABS from #FRX_CUST_CALL
+where new_Az_id not in (select distinct new_Az_id FROM  #FRX_COMN_PRE )
+
+--SELECT * FROM  #FRX_COMN_ABS
+
+drop table #FRX_CUST_COMN
+Select distinct A.new_Az_id,b.terr_id into #FRX_CUST_COMN
+from  #FRX_COMN_ABS a left join  (SELECT DISTINCT * FROM #d_cust_addr WHERE addr_typ_cd in ('COMN')) b
+on a.new_Az_id=b.new_az_id 
+
+Drop table #FRX_COMN_POST      
+SELECT DISTINCT new_Az_id, terr_id INTO #FRX_COMN_POST  FROM #FRX_CUST_COMN WHERE TERR_ID IS NOT NULL
+
+DROP TABLE #FRX_COMN_ABS1
+Select * INTO #FRX_COMN_ABS1 from #FRX_CUST_COMN
+where new_Az_id not in (select distinct new_Az_id FROM  #FRX_COMN_POST )
+
+--Select * from #FRX_COMN_ABS1
+
+Drop table #FRX_TERR_ID_PCx1
+SELECT * into #FRX_TERR_ID_PCx1 FROM  #FRX_IAT_PRE union
+SELECT * FROM  #FRX_INCNTV_PRE union
+SELECT * FROM  #FRX_CALL_PRE union
+SELECT * FROM  #FRX_COMN_PRE union
+SELECT * FROM  #FRX_COMN_POST 
+--76370
+
+drop table #PCx1_FRX_INCNTV_PRE_drop
+Select Distinct a.new_az_id,a.[AZ Territory ID],
+(case when a.new_az_id =b.new_Az_id then 1 else 0 end) as  pcx1_FRX_INCNTV_PRE
+into  #PCx1_FRX_INCNTV_PRE_drop
+from  #PCX_1_Iat_drop a
+left join #FRX_INCNTV_PRE b on a.new_az_id =b.new_Az_id
+
+Select * from  #PCx1_FRX_INCNTV_PRE_drop  where pcx1_FRX_INCNTV_PRE=0
+
+drop table #PCX_1_Iat_drop
+Select *  into #PCX_1_Iat_drop from #PCx1_FRX_IAT_PRE_drop where pcx1_FRX_IAT_PRE=1
+
+
+
+
+
+
+--Select * from #FRXUNIVERSE where new_Az_id NOT in (Select new_Az_id from #FRX_TERR_ID_PCx1)
+
+---------------------------------------------PCx2-----------------------------------------------------------------------------
+
+DROP TABLE #BREUNIVERSE
+
+Select DISTINCT [new_Az_id] INTO #BREUNIVERSE from #temp42 where [BRE Universe Access]='1' 
+
+-------------------------------------------------------------------------------------------------------
+
+/*drop table #BREUNIVERSE_drop
+Select a.new_az_id,a.[AZ Territory ID],
+(case when a.new_az_id =b.new_az_id then 1 else 0 end) as  BRE_drop
+into  #BREUNIVERSE_drop
+from #frx_drop_access a
+left join #BREUNIVERSE b on a.new_az_id =b.new_az_id
+
+Select * from #BREUNIVERSE_drop where BRE_drop=0
+
+Select *  into #bre_drop_access from #BREUNIVERSE_drop where BRE_drop=1*/
+
+
+
+---------------------------------------------------------------------------------------------------------------------
+
+
+
+drop table #GEOPCX2
+select *
+into #GEOPCX2
+from #geo
+WHERE chld_team_nm IN ('PCx_2')
+
+
+drop table #iat_pcx2
+Select DISTINCT coalesce (b.[az_cust_id], a.[cust_id]) as new_Az_id,  C.chld_az_funcl_terr_id TERR_ID into #iat_pcx2
+from [AZ_Call_Plan_Discovery].[dbo].[l199_AZ_IAT_CUST_ADDR_TEAM_01162023] a 
+LEFT join [dbo].[l128_d_old_cust_id_xref] b
+	on a.[cust_id]= b.old_az_cust_id
+LEFT JOIN #GEOPCX2 AS C
+ON A.ZIP=C.zip_id
+where a.team_nm in ('PCx_1','PCx_2','PCx_3')
+
+--SELECT TOP 100* FROM #d_cust_addr_pcx2
+
+--SELECT TOP 100* FROM #iat12
+
+drop table #d_cust_addr_pcx2
+SELECT DISTINCT coalesce(b.az_cust_id, a.az_cust_id) as new_az_id,addr_typ_cd,C.chld_az_funcl_terr_id TERR_ID 
+into #d_cust_addr_pcx2
+from [AZ_Call_Plan_Discovery].[dbo].[l200_d_cust_addr] a
+LEFT join [AZ_Call_Plan_Discovery].[dbo].[l128_d_old_cust_id_xref] b
+on a.az_cust_id = b.old_az_cust_id
+LEFT JOIN #GEOPCX2 AS C
+ON A.ZIP=C.zip_id
+where a.del_ind='N' and a.addr_typ_cd in ('IAT','INCNTV','CALL','COMN')
+
+
+Drop table #BRE_terr_tab_pcx2
+Select Distinct a.new_Az_id, b.terr_id into #BRE_terr_tab_pcx2 from #BREUNIVERSE a left join #iat_pcx2 b on a.new_Az_id=b.new_Az_id 
+
+Drop table #BRE_IAT_PRE_PCx2      
+SELECT DISTINCT new_Az_id, terr_id INTO #BRE_IAT_PRE_PCx2   FROM #BRE_terr_tab_pcx2  WHERE TERR_ID IS NOT NULL
+
+DROP TABLE #BRE_IAT_ABS_PCx2
+Select * INTO #BRE_IAT_ABS_PCx2 from #BRE_terr_tab_pcx2
+where new_Az_id not in (select distinct new_Az_id FROM #BRE_IAT_PRE_PCx2 )
+
+drop table #BRE_CUST_IAT_PCx2
+Select distinct A.new_Az_id,b.terr_id into #BRE_CUST_IAT_PCx2
+from #BRE_IAT_ABS_PCx2  a left join  (SELECT DISTINCT * FROM #d_cust_addr_pcx2 WHERE addr_typ_cd in ('IAT')) b
+on a.new_Az_id=b.new_az_id 
+
+Drop table #BRE_INCNTV_PRE_PCx2      
+SELECT DISTINCT new_Az_id, terr_id INTO #BRE_INCNTV_PRE_PCx2 FROM #BRE_CUST_IAT_PCx2 WHERE TERR_ID IS NOT NULL
+
+DROP TABLE #BRE_INCNTV_ABS_PCx2
+Select * INTO #BRE_INCNTV_ABS_PCx2 from #BRE_CUST_IAT_PCx2
+where new_Az_id not in (select distinct new_Az_id FROM  #BRE_INCNTV_PRE_PCx2 )
+
+--SELECT * FROM  #BRE_INCNTV_ABS_PCx2
+
+drop table #BRE_CUST_INCNTV_PCx2
+Select distinct A.new_Az_id,b.terr_id into #BRE_CUST_INCNTV_PCx2
+from #BRE_INCNTV_ABS_PCx2 a left join  (SELECT DISTINCT * FROM #d_cust_addr_pcx2 WHERE addr_typ_cd in ('INCNTV')) b
+on a.new_Az_id=b.new_az_id 
+
+Drop table #BRE_CALL_PRE_PCx2       
+SELECT DISTINCT new_Az_id, terr_id INTO #BRE_CALL_PRE_PCx2 FROM #BRE_CUST_INCNTV_PCx2 WHERE TERR_ID IS NOT NULL
+
+DROP TABLE #BRE_CALL_ABS_PCx2
+Select * INTO #BRE_CALL_ABS_PCx2 from  #BRE_CUST_INCNTV_PCx2
+where new_Az_id not in (select distinct new_Az_id FROM  #BRE_CALL_PRE_PCx2 )
+
+--SELECT * FROM  #BRE_CALL_ABS_PCx2
+
+drop table #BRE_CUST_CALL_PCx2
+Select distinct A.new_Az_id,b.terr_id into #BRE_CUST_CALL_PCx2
+from #BRE_CALL_ABS_PCx2 a left join  (SELECT DISTINCT * FROM #d_cust_addr_pcx2 WHERE addr_typ_cd in ('CALL')) b
+on a.new_Az_id=b.new_az_id 
+
+
+Drop table #BRE_COMN_PRE_PCx2       
+SELECT DISTINCT new_Az_id, terr_id INTO #BRE_COMN_PRE_PCx2  FROM #BRE_CUST_CALL_PCx2 WHERE TERR_ID IS NOT NULL
+
+DROP TABLE #BRE_COMN_ABS_PCx2
+Select * INTO #BRE_COMN_ABS_PCx2 from #BRE_CUST_CALL_PCx2
+where new_Az_id not in (select distinct new_Az_id FROM  #BRE_COMN_PRE_PCx2)
+
+--SELECT * FROM  #FRX_COMN_ABS
+
+drop table #BRE_CUST_COMN_PCx2
+Select distinct A.new_Az_id,b.terr_id into #BRE_CUST_COMN_PCx2
+from  #BRE_COMN_ABS_PCx2 a left join  (SELECT DISTINCT * FROM #d_cust_addr_pcx2 WHERE addr_typ_cd in ('COMN')) b
+on a.new_Az_id=b.new_az_id 
+
+
+Drop table #BRE_COMN_POST_PCx2     
+SELECT DISTINCT new_Az_id, terr_id INTO  #BRE_COMN_POST_PCx2   FROM #BRE_CUST_COMN_PCx2 WHERE TERR_ID IS NOT NULL
+
+DROP TABLE #BRE_COMN_ABS1_PCx2
+Select * INTO #BRE_COMN_ABS1_PCx2 from #BRE_CUST_COMN_PCx2
+where new_Az_id not in (select distinct new_Az_id FROM  #BRE_COMN_POST_PCx2 )
+
+--Select * from #BRE_COMN_ABS1_PCx2
+
+Drop table #BRE_TERR_ID_PCx2
+SELECT * into #BRE_TERR_ID_PCx2 FROM  #BRE_IAT_PRE_PCx2  union
+SELECT * FROM  #BRE_INCNTV_PRE_PCx2 union
+SELECT * FROM  #BRE_CALL_PRE_PCx2 union
+SELECT * FROM  #BRE_COMN_PRE_PCx2 union
+SELECT * FROM  #BRE_COMN_POST_PCx2 
+--76370
+
+
+--Select * from #BREUNIVERSE where new_Az_id NOT in (Select new_Az_id from #BRE_TERR_ID_PCx2)
+
+
+-------------------------------------------PCX_3-------------------------------------------------------------------------------------------
+
+DROP TABLE #BREUNIVERSE_pcx3
+Select DISTINCT [new_Az_id] INTO #BREUNIVERSE_pcx3 from #temp42 where [BRE Universe Access]='1' 
+
+drop table #GEOPCX3
+select *
+into #GEOPCX3
+from #geo
+WHERE chld_team_nm IN ('PCx_3')
+
+
+drop table #iat_pcx3
+Select DISTINCT coalesce (b.[az_cust_id], a.[cust_id]) as new_Az_id, C.chld_az_funcl_terr_id TERR_ID into #iat_pcx3
+from [AZ_Call_Plan_Discovery].[dbo].[l199_AZ_IAT_CUST_ADDR_TEAM_01162023] a 
+LEFT join [dbo].[l128_d_old_cust_id_xref] b
+	on a.[cust_id]= b.old_az_cust_id
+LEFT JOIN #GEOPCX3 AS C
+ON A.ZIP=C.ZIP_id
+where a.team_nm in ('PCx_1','PCx_2','PCx_3')
+
+--SELECT TOP 100* FROM #d_cust_addr
+
+--SELECT TOP 100* FROM #iat12
+
+drop table #d_cust_addr_PCx3
+SELECT DISTINCT coalesce(b.az_cust_id, a.az_cust_id) as new_az_id,addr_typ_cd,C.chld_az_funcl_terr_id TERR_ID
+into #d_cust_addr_PCx3
+from [AZ_Call_Plan_Discovery].[dbo].[l200_d_cust_addr] a
+LEFT join [AZ_Call_Plan_Discovery].[dbo].[l128_d_old_cust_id_xref] b
+on a.az_cust_id = b.old_az_cust_id
+LEFT JOIN #GEOPCX3 AS C
+ON A.ZIP=C.ZIP_id
+where a.del_ind='N' and a.addr_typ_cd in ('IAT','INCNTV','CALL','COMN')
+
+
+--Select * from #BRE_terr_tab_pcx3
+Drop table #BRE_terr_tab_pcx3
+Select Distinct a.new_Az_id, b.terr_id into #BRE_terr_tab_pcx3 from #BREUNIVERSE a left join #iat_pcx3 b on a.new_Az_id=b.new_Az_id 
+
+
+
+Drop table #BRE_IAT_PRE_PCx3      
+SELECT DISTINCT new_Az_id, terr_id INTO #BRE_IAT_PRE_PCx3  FROM #BRE_terr_tab_pcx3  WHERE TERR_ID IS NOT NULL
+
+DROP TABLE #BRE_IAT_ABS_PCx3  
+Select * INTO #BRE_IAT_ABS_PCx3   from #BRE_terr_tab_PCx3  
+where new_Az_id not in (select distinct new_Az_id FROM #BRE_IAT_PRE_PCx3  )
+
+
+drop table #BRE_CUST_IAT_PCx3  
+Select distinct A.new_Az_id,b.terr_id into #BRE_CUST_IAT_PCx3  
+from #BRE_IAT_ABS_PCx3   a left join  (SELECT DISTINCT * FROM #d_cust_addr_PCx3 WHERE addr_typ_cd in ('IAT')) b
+on a.new_Az_id=b.new_az_id 
+
+
+Drop table #BRE_INCNTV_PRE_PCx3        
+SELECT DISTINCT new_Az_id, terr_id INTO #BRE_INCNTV_PRE_PCx3   FROM #BRE_CUST_IAT_PCx3   WHERE TERR_ID IS NOT NULL
+
+DROP TABLE #BRE_INCNTV_ABS_PCx3
+Select * INTO #BRE_INCNTV_ABS_PCx3 from #BRE_CUST_IAT_PCx3
+where new_Az_id not in (select distinct new_Az_id FROM  #BRE_INCNTV_PRE_PCx3 )
+
+--SELECT * FROM  #BRE_INCNTV_ABS_PCx3
+
+drop table #BRE_CUST_INCNTV_PCx3
+Select distinct A.new_Az_id,b.terr_id into #BRE_CUST_INCNTV_PCx3
+from #BRE_INCNTV_ABS_PCx3 a left join  (SELECT DISTINCT * FROM #d_cust_addr_PCx3 WHERE addr_typ_cd in ('INCNTV')) b
+on a.new_Az_id=b.new_az_id 
+
+
+
+Drop table #BRE_CALL_PRE_PCx3       
+SELECT DISTINCT new_Az_id, terr_id INTO #BRE_CALL_PRE_PCx3 FROM #BRE_CUST_INCNTV_PCx3 WHERE TERR_ID IS NOT NULL
+
+DROP TABLE #BRE_CALL_ABS_PCx3
+Select * INTO #BRE_CALL_ABS_PCx3 from  #BRE_CUST_INCNTV_PCx3
+where new_Az_id not in (select distinct new_Az_id FROM  #BRE_CALL_PRE_PCx3 )
+
+--SELECT * FROM  #BRE_CALL_ABS_PCx3
+
+drop table #BRE_CUST_CALL_PCx3
+Select distinct A.new_Az_id,b.terr_id into #BRE_CUST_CALL_PCx3
+from #BRE_CALL_ABS_PCx3 a left join  (SELECT DISTINCT * FROM #d_cust_addr_PCx3 WHERE addr_typ_cd in ('CALL')) b
+on a.new_Az_id=b.new_az_id 
+
+
+Drop table #BRE_COMN_PRE_PCx3      
+SELECT DISTINCT new_Az_id, terr_id INTO #BRE_COMN_PRE_PCx3  FROM #BRE_CUST_CALL_PCx3 WHERE TERR_ID IS NOT NULL
+
+DROP TABLE #BRE_COMN_ABS_PCx3
+Select * INTO #BRE_COMN_ABS_PCx3 from #BRE_CUST_CALL_PCx3
+where new_Az_id not in (select distinct new_Az_id FROM  #BRE_COMN_PRE_PCx3)
+
+--SELECT * FROM  #FRX_COMN_ABS
+
+drop table #BRE_CUST_COMN_PCx3
+Select distinct A.new_Az_id,b.terr_id into #BRE_CUST_COMN_PCx3
+from  #BRE_COMN_ABS_PCx3 a left join  (SELECT DISTINCT * FROM #d_cust_addr_PCx3 WHERE addr_typ_cd in ('COMN')) b
+on a.new_Az_id=b.new_az_id 
+
+
+Drop table #BRE_COMN_POST_PCx3    
+SELECT DISTINCT new_Az_id, terr_id INTO  #BRE_COMN_POST_PCx3   FROM #BRE_CUST_COMN_PCx3 WHERE TERR_ID IS NOT NULL
+
+DROP TABLE #BRE_COMN_ABS1_PCx3
+Select * INTO #BRE_COMN_ABS1_PCx3 from #BRE_CUST_COMN_PCx3
+where new_Az_id not in (select distinct new_Az_id FROM  #BRE_COMN_POST_PCx3 )
+
+--Select * from #BRE_COMN_ABS1_PCx3
+
+Drop table #BRE_TERR_ID_PCx3
+SELECT * into #BRE_TERR_ID_PCx3 FROM  #BRE_IAT_PRE_PCx3  union
+SELECT * FROM  #BRE_INCNTV_PRE_PCx3 union
+SELECT * FROM  #BRE_CALL_PRE_PCx3 union
+SELECT * FROM  #BRE_COMN_PRE_PCx3 union
+SELECT * FROM  #BRE_COMN_POST_PCx3 
+--76370
+
+
+
+------------------------------------------------------
+--Select * from #BREUNIVERSE where new_Az_id NOT in (Select new_Az_id from #BRE_TERR_ID_PCx3)
+
+--Select * from  #FRX_TERR_ID_PCx1 
+--Select * from  #BRE_TERR_ID_PCx2
+--Select * from  #Final_terr_PCx3
+
+
+drop table #Final_terr_PCx1
+Select b.new_Az_id,a.Bre_priority,a.frx_priority,a.[PUEBLO BRE],a.[PUEBLO FRX],
+a.bre_colocated,a.frx_colocated,b.terr_id
+into #Final_terr_PCx1
+from  #FRX_TERR_ID_PCx1  b
+left join #temp42 a on a.new_Az_id=b.new_Az_id
+
+
+--Select Distinct new_Az_id from  #Final_terr_PCx1
+--Select * from #temp42
+
+/*Select new_Az_id,terr_id ,count(new_Az_id) as cnt from #Final_terr_PCx1 group by new_Az_id
+order by cnt desc*/
+
+--Select * from #Final_terr_PCx1 where terr_id is not NULL 
+
+
+-----------------------------------------Final_Product_PCx1--------------------------------------------------------------------
+drop table Final_product_p1
+Select *,'Farxiga' as P1
+into Final_product_p1 
+from #Final_terr_PCx1 
+
+
+
+drop table #Final_product_P2_PCx1
+Select distinct a.*,B.[PRODUCT 2] as  P2, B.curr_target
+into #Final_product_P2_PCx1
+from Final_product_p1 a
+left join (select *,  1  as curr_target from #cp_temp_pcx where team='PCx_1') as b 
+on a.new_Az_id = b.new_Az_id and 
+a.terr_id=b.[AZ Territory ID] 
+WHERE [PUEBLO FRX]='N'
+
+
+-------------------------------------------------------------------------------------------------
+/*drop table #PCx_1_drop
+Select Distinct a.new_az_id,a.[AZ Territory ID],
+(case when a.new_az_id =b.new_Az_id then 1 else 0 end) as  pcx1_drop
+into  #PCx_1_drop
+from #bre_drop_access a
+left join #Final_product_P2_PCx1 b on a.new_az_id =b.new_Az_id
+
+Select * from  #PCx_1_drop where pcx1_drop=1
+
+Select *  into #bre_drop_access from #BREUNIVERSE_drop where BRE_drop=1*/
+
+-----------------------------------------------------------------------
+
+
+--SELECT * FROM #Final_product_P2_PCx1 where new_az_id =  1004298268
+--76765
+
+update  #Final_product_P2_PCx1
+Set P2 = 'BREZTRI AEROSPHERE' where P2 is NULL and  Bre_priority in ('T1 - Green','T1 Plus - Purple','T2 - Yellow','T3 - Orange')
+
+update #Final_product_P2_PCx1
+Set P2 = ' ' where ([PUEBLO BRE]='Y')
+
+
+update #Final_product_P2_PCx1
+Set P2 = ' ' where P2 is NULL
+
+
+--Select * from #Final_product_P2_PCx1 where ([PUEBLO BRE]='Y')
+
+
+-----------------------------------------Final_Product_PCx2--------------------------------------------------------
+
+drop table #Final_terr_PCx2
+Select a.new_Az_id,a.Bre_priority,a.frx_priority,a.[PUEBLO BRE],a.[PUEBLO FRX],
+a.bre_colocated,a.frx_colocated,c.terr_id
+into #Final_terr_PCx2
+from  #BRE_TERR_ID_PCx2 c 
+left join #temp42 a on a.new_Az_id=c.new_Az_id
+
+
+--Select Distinct new_Az_id from  #Final_terr_PCx2
+--Select * from #temp42
+
+/*elect new_Az_id,count(new_Az_id) as cnt from #Final_terr_PCx2 group by new_Az_id
+order by cnt desc
+
+Select * from #Final_terr_PCx2 where terr_id is not NULL */
+
+
+drop table Final_product_p1_pcx2 
+Select *,'BREZTRI AEROSPHERE' as P1
+into Final_product_p1_pcx2
+from #Final_terr_PCx2
+
+
+drop table #Final_product_P2_PCx2
+Select distinct a.*,B.[PRODUCT 2] as  P2, B.curr_target
+into  #Final_product_P2_PCx2
+from Final_product_p1_pcx2 a
+left join (select *, 1  as curr_target  from #cp_temp_pcx where team='PCx_2') as b 
+on a.new_Az_id = b.new_Az_id and 
+a.terr_id=b.[AZ Territory ID] 
+WHERE [PUEBLO BRE]='N'
+
+--SELECT COUNT(*) FROM Final_product_p1_pcx2 where new_az_id =  1004077845
+-------------------------------------------------------------------------------------
+/*drop table #PCx_2_drop
+Select Distinct a.new_az_id,a.[AZ Territory ID],
+(case when a.new_az_id =b.new_Az_id then 1 else 0 end) as  pcx2_drop
+into  #PCx_2_drop
+from #bre_drop_access a
+left join #Final_product_P2_PCx2 b on a.new_az_id =b.new_Az_id
+
+Select * from  #PCx_2_drop where pcx2_drop=0
+
+Select *  into #bre_drop_access from #BREUNIVERSE_drop where BRE_drop=1*/
+
+
+
+
+-------------------------------------------------------------------------------------------------
+
+Select Distinct P2 from  #Final_product_P2_PCx2
+update  #Final_product_P2_PCx2
+Set P2 = 'Farxiga' where P2 is NULL and  frx_priority in ('1. Priority 1','2. Priority 2')
+
+update #Final_product_P2_PCx2
+Set P2 = ' ' where ([PUEBLO FRX]='Y')
+
+update #Final_product_P2_PCx2
+Set P2 = ' ' where P2 is NULL
+
+--Select * from #Final_product_P2_PCx2 where  ([PUEBLO FRX]='Y') --P2 is NULL  and frx_priority in ('1. Priority 1','2. Priority 2')
+
+
+-----------------------------------------Final_Product_PCx3--------------------------------------------------------
+
+drop table #Final_terr_PCx3
+Select a.new_Az_id,a.Bre_priority,a.frx_priority,a.[PUEBLO BRE],a.[PUEBLO FRX],
+a.bre_colocated,a.frx_colocated,d.terr_id
+into #Final_terr_PCx3
+from #BRE_TERR_ID_PCx3 d
+left join  #temp42 a on a.new_Az_id=d.new_Az_id
+
+--Select Distinct new_Az_id from  #Final_terr_PCx2
+--Select * from #temp42
+
+/*Select new_Az_id,count(new_Az_id) as cnt from #Final_terr_PCx3 group by new_Az_id
+order by cnt desc
+
+Select * from #Final_terr_PCx3 where terr_id is not NULL */
+
+
+drop table Final_product_p1_pcx3 
+Select *,'BREZTRI AEROSPHERE' as P1
+into Final_product_p1_pcx3
+from #Final_terr_PCx3
+
+drop table #Final_product_P2_PCx3
+Select distinct a.*,B.[PRODUCT 2] as  P2, b.curr_target 
+into  #Final_product_P2_PCx3
+from Final_product_p1_pcx3  a
+left join (select *, 1  as curr_target from #cp_temp_pcx where team='PCx_3') as b 
+on a.new_Az_id = b.new_Az_id and 
+a.terr_id=b.[AZ Territory ID] 
+WHERE [PUEBLO BRE]='N'
+
+--SELECT COUNT(*) FROM #Final_product_P2_PCx3 where new_az_id =  1004077845
+--82041
+
+---------------------------------------------------------------------------------
+/*drop table #PCx_3_drop
+Select Distinct a.new_az_id,a.[AZ Territory ID],
+(case when a.new_az_id =b.new_Az_id then 1 else 0 end) as  pcx3_drop
+into  #PCx_3_drop
+from #bre_drop_access a
+left join #Final_product_P2_PCx3 b on a.new_az_id =b.new_Az_id
+
+Select * from  #PCx_3_drop where pcx3_drop=0
+
+Select *  into #PCX_3_lineup_drpp from #PCx_3_drop where pcx3_drop=1*/
+
+--------------------------------------------------------------------------------------------------------------------
+
+
+
+------------------------------------------------------------------------------------------
+
+
+update  #Final_product_P2_PCx3
+Set P2 = 'Farxiga' where P2 is NULL and  frx_priority in ('1. Priority 1','2. Priority 2')
+
+update #Final_product_P2_PCx3
+Set P2 = ' ' where ([PUEBLO FRX]='Y')
+
+update #Final_product_P2_PCx3
+Set P2 = ' ' where P2 is NULL
+
+
+--Select * from #Final_product_P2_PCx3 where ([PUEBLO FRX]='Y') -- P2 is NULL  and frx_priority in ('1. Priority 1','2. Priority 2')
+
+
+--Select * from #Final_product_P2_PCx1
+--Select * from #Final_product_P2_PCx2
+--Select * from #Final_product_P2_PCx3
+
+
+------------------------------All PCx------------------------------------------------------------------------------------------------------------
+drop table #Final_product_all_PCx
+SELECT a1.*, 'PCX1' AS PCX_team into #Final_product_all_PCx from #Final_product_P2_PCx1  a1
+union SELECT a2.*, 'PCX2' AS PCX_team from #Final_product_P2_PCx2 a2
+union SELECT a3.*, 'PCX3' AS PCX_team from #Final_product_P2_PCx3 a3
+
+
+/*drop table #final_drop
+Select Distinct a.new_az_id,a.[AZ Territory ID],
+(case when a.new_az_id =b.new_az_id then 1 else 0 end) as  final_drop
+into  #final_drop
+from #bre_drop_access a
+left join #Final_product_all_PCx b on a.new_az_id =b.new_az_id
+
+Select * from #final_drop where final_drop=1
+
+Select *  into #bre_drop_access from #BREUNIVERSE_drop where BRE_drop=1*/
+
+--SELECT * FROM #Final_product_P2_PCx2 where terr_id in (SELECT terr_id FROM #Final_product_P2_PCx3)  
+
+
+UPDATE #Final_product_all_PCx
+SET curr_target = 0  WHERE curr_target IS NULL
+
+
+-------------------------------Asm-Cur BRE------------------------------------------------------------------------------------------------------------
+
+drop table #bre_curve
+select b. * , cast(b.[2023 LTDM Dollarized Asymptote] as varchar ) as [int 2023 LTDM Dollarized Asymptote]
+into #bre_curve
+from [dbo].[l65_2021 BRE Response Curves (Futurized for 2022 & 2023) v1] b
+
+UPDATE #bre_curve
+SET [int 2023 LTDM Dollarized Asymptote] = replace(Right([2023 LTDM Dollarized Asymptote], LEN([2023 LTDM Dollarized Asymptote])),',','')
+
+UPDATE #bre_curve
+SET [int 2023 LTDM Dollarized Asymptote] = cast([int 2023 LTDM Dollarized Asymptote] as float)
+
+drop table #bre_curve_upd
+Select A.* , coalesce (b.[az_cust_id], a.[az_hcp_id]) as new_Az_id
+into #bre_curve_upd
+from #bre_curve as a
+LEFT join [dbo].[l128_d_old_cust_id_xref] b
+	on a.[az_hcp_id]= b.old_az_cust_id
+
+drop table #bre_curve_upd1
+Select A.*, B.duplic,
+CASE WHEN B.duplic > 1 and A.new_az_id = A.az_hcp_id THEN 1 ELSE 0 END AS HCP_IN_FLag into #bre_curve_upd1
+from #bre_curve_upd A
+left join (Select new_Az_id, count(distinct [az_hcp_id]) as duplic  from #bre_curve_upd group by  new_Az_id) B on A.new_Az_id = B.new_Az_id
+ORDER BY duplic desc
+
+
+drop table #bre_curve_new_az_id
+SELECT * INTO #bre_curve_new_az_id FROM #bre_curve_upd1
+WHERE duplic = 1 OR HCP_IN_FLag = 1
+
+
+
+-------------------------------Asm-Cur FRX------------------------------------------------------------------------------------------------------------
+
+--Select * FROM [AZ_Call_Plan_Discovery].[dbo].[l67_2021 FRX Response Curves (Futurized for 2022 & 2023)]
+
+drop table #frx_curve
+select b. * , cast(b.[2023 LTDM Dollarized Asymptote] as varchar ) as [int 2023 LTDM Dollarized Asymptote]
+into #frx_curve
+from [dbo].[l67_2021 FRX Response Curves (Futurized for 2022 & 2023)] b
+
+UPDATE #frx_curve
+SET [int 2023 LTDM Dollarized Asymptote] = replace(Right([2023 LTDM Dollarized Asymptote], LEN([2023 LTDM Dollarized Asymptote])),',','')
+
+UPDATE #frx_curve
+SET [int 2023 LTDM Dollarized Asymptote] = cast([int 2023 LTDM Dollarized Asymptote] as float)
+
+
+drop table #frx_curve_upd
+Select A.* , coalesce (b.[az_cust_id], a.[az_hcp_id]) as new_Az_id
+into #frx_curve_upd
+from #frx_curve as a
+LEFT join [dbo].[l128_d_old_cust_id_xref] b
+	on a.[az_hcp_id]= b.old_az_cust_id
+
+drop table #frx_curve_upd1
+Select A.*, B.duplic,
+CASE WHEN B.duplic > 1 and A.new_az_id = A.az_hcp_id THEN 1 ELSE 0 END AS HCP_IN_FLag into #frx_curve_upd1
+from #frx_curve_upd A
+left join (Select new_Az_id, count(distinct [az_hcp_id]) as duplic  from #frx_curve_upd group by  new_Az_id) B on A.new_Az_id = B.new_Az_id
+ORDER BY duplic desc
+
+
+drop table #frx_curve_new_az_id
+SELECT * INTO #frx_curve_new_az_id FROM #frx_curve_upd1
+WHERE duplic = 1 OR HCP_IN_FLag = 1
+
+
+drop table #zerofile_all_pcx
+select distinct it.* ,
+	case when it.[new_Az_id]=bc.new_Az_id  then CAST(bc.Curvature as float) end Cur_bre
+into #zerofile_all_pcx
+from #Final_product_all_PCx it
+	left join #bre_curve_new_az_id bc on it.[new_Az_id]=bc.new_Az_id
+
+
+drop table #zerofile1_all_pcx
+select distinct it.* ,
+	case when it.[new_Az_id]=bc.new_Az_id  then bc.[int 2023 LTDM Dollarized Asymptote] end Asm_bre
+into #zerofile1_all_pcx
+from #zerofile_all_pcx it
+	left join #bre_curve_new_az_id bc on it.[new_Az_id]=bc.new_Az_id
+
+
+
+drop table #zerofile2_all_pcx
+select distinct it.* ,
+	case when it.[new_Az_id]=bc.new_Az_id  then CAST(bc.Curvature as float) end Cur_frx
+into #zerofile2_all_pcx
+from #zerofile1_all_pcx it
+	left join #frx_curve_new_az_id bc on it.[new_Az_id]=bc.new_Az_id
+
+
+drop table #zerofile_all_pcx_final
+select distinct it.* ,
+	case when it.[new_Az_id]=bc.new_Az_id  then bc.[int 2023 LTDM Dollarized Asymptote] end Asm_frx
+into #zerofile_all_pcx_final
+from #zerofile2_all_pcx it
+	left join #frx_curve_new_az_id bc on it.[new_Az_id]=bc.new_Az_id
+
+
+UPDATE #zerofile_all_pcx_final
+SET Cur_frx=0
+WHERE Cur_frx IS NULL;
+
+UPDATE #zerofile_all_pcx_final
+SET Asm_frx=0
+WHERE Asm_frx IS NULL;
+
+UPDATE #zerofile_all_pcx_final
+SET Asm_bre=0
+WHERE Asm_bre IS NULL;
+
+UPDATE #zerofile_all_pcx_final
+SET Cur_bre=0
+WHERE Cur_bre IS NULL;
+
+
+
+
+--SELECT new_az_id, count(new_az_id) count_az FROM #Final_product_all_PCx GROUP BY new_az_id order by count_az desc
+
+--SELECt * FROM #Final_product_all_PCx
+--WHERE new_az_id = 128665561
+
+
+----------------------------PCx Zero File-------------------------------------
+
+
+drop table #input0
+select a. *,b.AM_222_call_freq_perc_50,c.tot_calls*2 as tot_calls
+into #input0
+from #zerofile_all_pcx_final a
+left join #AM_222_call_freq_perc_50 as b
+on a.new_Az_id = b.new_Az_id
+LEFT join (Select new_Az_id,MAX(calls) tot_calls  from 
+#calls_6_months_Aug_22_to_Jan_23  group by new_Az_id) as c
+on a.new_Az_id = c.new_Az_id
+
+
+-------------------------------------------------------------------------------------
+
+Update #input0
+set [AM_222_call_freq_perc_50]=cast(0 as float)
+where [AM_222_call_freq_perc_50] is NULL or [AM_222_call_freq_perc_50] =''
+
+
+UPDATE #input0
+SET [AM_222_call_freq_perc_50] = cast([AM_222_call_freq_perc_50] as float)
+
+Update #input0
+set tot_Calls=cast(0 as float)
+where tot_Calls is NULL or tot_Calls =''
+
+
+UPDATE #input0
+SET tot_Calls = cast(tot_Calls as float)
+
+-----------------------------------------------------------------frequency cap-----------------------------
+
+
+alter table #input0 add [Frequency_Cap] float
+
+Update #input0
+set [Frequency_Cap] = cast(tot_Calls as float)
+where cast(tot_Calls as float)  >=cast([AM_222_call_freq_perc_50] as float)
+	
+
+	
+Update #input0
+set Frequency_Cap=cast([AM_222_call_freq_perc_50] as float)
+where cast( [AM_222_call_freq_perc_50] as float)>=cast(tot_Calls as float)
+
+
+Update #input0
+set Frequency_Cap=30
+where Frequency_Cap>30 
+
+
+
+drop table #final_zero_file
+SELECT * into #final_zero_file FROM #input0
+
+
+------------------------------------
+
+
+ Alter table #final_zero_file
+ add MROI float ;
+
+ Alter table #final_zero_file
+ add ASSIGNED_CALLS int ;
+
+ Alter table #final_zero_file
+ add  Next_Calls int ;
+
+
+ ALTER TABLE #final_zero_file 
+  ADD SD AS
+    CASE
+      WHEN ([P1] =  'Farxiga' and [P2]='BREZTRI AEROSPHERE') THEN 'FRX-BRE'
+      WHEN ([P1] =  'Farxiga' and [P2]='') THEN 'FRX'
+	  WHEN ([P1] =  'BREZTRI AEROSPHERE' and [P2]='Farxiga') THEN 'BRE-FRX'
+	  WHEN ([P1] =  'BREZTRI AEROSPHERE' and [P2]='') THEN 'BRE'
+      ELSE '-'
+    END 
+
+
+
+ Update  #final_zero_file
+set ASSIGNED_CALLS=0
+
+ Update  #final_zero_file
+set ASSIGNED_CALLS=6 WHERE curr_target = 1
+
+
+Update  #final_zero_file
+set Next_Calls=6;
+
+
+ Update  #final_zero_file
+set Next_Calls=12 WHERE ASSIGNED_CALLS = 6
+
+drop table #balanced_freq_cap
+select *,
+case 
+--when [Frequency Cap]=1 then 1
+-- when [Frequency Cap]>=2 and [Frequency Cap]<=3 then (([Frequency Cap]+1) - ([Frequency Cap]%6))
+--when [Frequency Cap]>=4 and [Frequency Cap]<=5 then (([Frequency Cap]) + (6-([Frequency Cap]%6)))
+	when frequency_cap>0 and frequency_cap<=6 then 6
+	 when (cast(frequency_cap as int )%6)>3 then frequency_cap + (6-(cast(frequency_cap as int )%6))
+	 when (cast(frequency_cap as int )%6)<=3 then frequency_cap - (cast(frequency_cap as int )%6)
+end [Balanced Freq Cap]
+into #balanced_freq_cap
+from #final_zero_file
+
+
+drop table #balanced_freq_cap_priority
+SELECT *,
+	CASE 
+		WHEN P1 = 'Farxiga' THEN
+			CASE
+				WHEN curr_target = 1 AND frx_priority = '1. Priority 1' THEN 1
+				WHEN curr_target = 0 AND frx_priority = '1. Priority 1' THEN 2
+				WHEN curr_target = 1 AND frx_priority = '2. Priority 2' THEN 3
+				WHEN curr_target = 0 AND frx_priority = '2. Priority 2' THEN 4
+				WHEN curr_target = 1 AND frx_priority = '3. Priority 3' THEN 5
+				WHEN curr_target = 1 AND frx_priority = '4. Priority 4' THEN 6
+				WHEN curr_target = 1 THEN 7
+				WHEN curr_target = 0 AND frx_priority = '3. Priority 3' THEN 8
+				WHEN curr_target = 0 AND frx_priority = '4. Priority 4' THEN 9
+				ELSE 10
+			END
+		WHEN P1 = 'BREZTRI AEROSPHERE' THEN
+			CASE
+				WHEN curr_target = 1 AND bre_priority = 'T1 Plus - Purple' THEN 1
+				WHEN curr_target = 0 AND bre_priority = 'T1 Plus - Purple' THEN 2
+				WHEN curr_target = 1 AND bre_priority = 'T1 - Green' THEN 3
+				WHEN curr_target = 0 AND bre_priority = 'T1 - Green' THEN 4
+				WHEN curr_target = 1 AND bre_priority = 'T2 - Yellow' THEN 5
+				WHEN curr_target = 0 AND bre_priority = 'T2 - Yellow' THEN 6
+				WHEN curr_target = 1 AND bre_priority = 'T3 - Orange' THEN 7
+				WHEN curr_target = 1 AND bre_priority = 'T4 - Red' THEN 8
+				WHEN curr_target = 1  THEN 9
+				WHEN curr_target = 0 AND bre_priority = 'T3 - Orange' THEN 10
+				WHEN curr_target = 0 AND bre_priority = 'T4 - Red' THEN 11
+				ELSE 12
+			END
+			ELSE 11
+		END AS priority_frx_bre into #balanced_freq_cap_priority
+FROM #balanced_freq_cap 
+
+
+
+drop table #ZERO_FILE
+select  new_az_id [New AZID], terr_id [Territory ID], curr_target, P1, P2, bre_priority as [BRE Segment], frx_priority as [FRX Segment],priority_frx_bre, Cur_bre, Asm_bre, Cur_frx, Asm_frx, frequency_cap as [Frequency Cap], MROI, ASSIGNED_CALLS, Next_Calls, SD, [Balanced Freq Cap]
+into #ZERO_FILE
+from  #balanced_freq_cap_priority
+
+
+
+
+--Select * from  #ZERO_FILE
+--Select * from #geo where len(zip_id)<>5
+
+--Select zip_id,chld_az_funcl_terr_id, chld_funcl_terr_nm,chld_az_geo_id,chld_team_nm from #geo where chld_team_nm in ('PCx_1','PCx_2','PCx_3')
+
+------------------------------------Geo Merge-------------------------
+drop table #Zero_file_temp_case
+SELECT * INTO #Zero_file_temp_case FROM #ZERO_FILE WHERE [Territory ID] IN (20105100)
+
+--20105244, 20105245, 20105246 remove
+--update  #Zero_file_temp_case SET [Territory ID] = 111111 WHERE [Territory ID] IN (20105101, 201015102)
+--update  #Zero_file_temp_case SET [Territory ID] = 222222 WHERE [Territory ID] IN (20105244, 20105245, 20105246)
+
+--Select * from #Zero_file_temp_case
+
+--Select Distinct [New AZID] from #Zero_file_temp_case
+
+drop table #ZERO_FILE
+SELECT [New AZID], [Territory ID], P1, P2, [BRE Segment], [FRX Segment],
+priority_frx_bre, Cur_bre, Asm_bre, Cur_frx, Asm_frx, [Frequency Cap], MROI, ASSIGNED_CALLS, Next_Calls, SD,
+[Balanced Freq Cap], max(curr_target) as max_curr_tgt
+INTO #ZERO_FILE FROM #Zero_file_temp_case
+group by [New AZID],[Territory ID], P1, P2, [BRE Segment], [FRX Segment],
+priority_frx_bre, Cur_bre, Asm_bre, Cur_frx, Asm_frx, [Frequency Cap], MROI, ASSIGNED_CALLS, Next_Calls, SD,
+[Balanced Freq Cap]
+
+select * from #ZERO_FILE where [New aZID]='56535288'
+
+
+
+--SELECT * FROM #ZERO_FILE where [New AZID] not in ( Select new_az_id from  #balanced_freq_cap_priority)
+
+
+-------------------------------------------------Greedy Algo --------------------------------
+
+
+--select [Territory ID],sum([Balanced Freq Cap]) from #accessible_univ group by [Territory ID] where [Territory ID]='20113413'
+
+--select  *   from #ZERO_FILE 
+--62976
+
+drop table #ZERO_FILE
+SELECT * INTO #ZERO_FILE FROM #Zero_file_temp_case
+
+--------------------------------------------
+DECLARE @itr_no as int = 1
+DECLARE @max_itr as int =3500
+DECLARE @REPCAP AS FLOAT = 1700
+--DECLARE @cost_per_call as float = 1
+--
+DECLARE @MAX_CALL AS FLOAT = 1.3
+DECLARE @MIN_CALL AS FLOAT = 0.9
+DECLARE @total_calls as int = 0
+DECLARE @max_calls as int = 1700
+DECLARE @mROI as float = 1
+DECLARE @FACT AS FLOAT = 1
+DECLARE @RCD AS INT = 1
+DECLARE @BRE_BAG AS FLOAT = 1.0
+--
+DECLARE @FRX_BAG AS FLOAT = 1.0
+--
+DECLARE @MAX_TARGETS AS INT = 1500
+
+
+
+
+
+UPDATE #ZERO_FILE 
+SET MROI= CASE WHEN  SD='FRX' THEN (Asm_frx*(1-EXP(-Cur_frx*Next_Calls)))-(Asm_frx*(1-EXP(-Cur_frx*ASSIGNED_CALLS)))
+				WHEN  SD='FRX-BRE' THEN (((Asm_frx*(1-EXP(-Cur_frx*Next_Calls)))-(Asm_frx*(1-EXP(-Cur_frx*ASSIGNED_CALLS)))) + 
+				((Asm_bre*(1-EXP(-Cur_bre*Next_Calls*0.5)))-(Asm_bre*(1-EXP(-Cur_bre*ASSIGNED_CALLS*0.5)))))
+				WHEN  SD='BRE' THEN (Asm_bre*(1-EXP(-Cur_bre*Next_Calls)))-(Asm_bre*(1-EXP(-Cur_bre*ASSIGNED_CALLS)))
+				WHEN  SD='BRE-FRX' THEN (((Asm_frx*(1-EXP(-0.5*Cur_frx*Next_Calls)))-(Asm_frx*(1-EXP(-0.5*Cur_frx*ASSIGNED_CALLS)))) + 
+				((Asm_bre*(1-EXP(-Cur_bre*Next_Calls)))-(Asm_bre*(1-EXP(-Cur_bre*ASSIGNED_CALLS)))))
+				ELSE 0 END
+		
+		
+--select * from #ZERO_FILE where MROI == 0
+
+--select  *  from #ZERO_FILE
+IF OBJECT_ID('TEMPDB..#NEURO_ASSIGNED_CALLS') IS NOT NULL DROP TABLE #NEURO_ASSIGNED_CALLS
+create table #NEURO_ASSIGNED_CALLS (
+[New AZID]		varchar(100), 
+[Territory ID]	varchar(100), 
+SD varchar(100),  
+P1  			varchar(100), 
+P2  			varchar(100), 
+ASSIGNED_CALLS 	int, 
+MROI 			float, 
+ITERATION 		int
+)
+
+
+
+
+--select  *  from #NEURO_ASSIGNED_CALLS
+
+ --no records from this filter will only create table 
+
+IF OBJECT_ID('TEMPDB..#TERR_SUMMARY') IS NOT NULL DROP TABLE #TERR_SUMMARY
+SELECT [Territory ID] AS [Territory ID], SUM(ASSIGNED_CALLS) TOT_ASSIGNED, @REPCAP - SUM(ASSIGNED_CALLS) TOT_LEFT,
+	150 TARGETS_LEFT, 0 BRE_P1, 0 FRX_P1, 0 BRE_P1_TARGET, 0 FRX_P1_TARGET
+INTO #TERR_SUMMARY
+FROM #ZERO_FILE
+GROUP BY [Territory ID]
+
+--select * from #TERR_SUMMARY
+
+--select  *  from #TERR_SUMMARY
+-------------------------------------------------
+--remove mroi >0
+
+WHILE @itr_no<=@max_itr AND @RCD >0 --AND @total_calls<=@max_calls --AND @mROI>0 
+BEGIN
+
+--DECLARE @cost_per_call as float = 1
+	
+UPDATE #ZERO_FILE 
+SET MROI= CASE WHEN  SD='FRX' THEN (Asm_frx*(1-EXP(-Cur_frx*Next_Calls)))-(Asm_frx*(1-EXP(-Cur_frx*ASSIGNED_CALLS)))
+				WHEN  SD='FRX-BRE' THEN (((Asm_frx*(1-EXP(-Cur_frx*Next_Calls)))-(Asm_frx*(1-EXP(-Cur_frx*ASSIGNED_CALLS)))) + 
+				((Asm_bre*(1-EXP(-Cur_bre*Next_Calls*0.5)))-(Asm_bre*(1-EXP(-Cur_bre*ASSIGNED_CALLS*0.5)))))
+				WHEN  SD='BRE' THEN (Asm_bre*(1-EXP(-Cur_bre*Next_Calls)))-(Asm_bre*(1-EXP(-Cur_bre*ASSIGNED_CALLS)))
+				WHEN  SD='BRE-FRX' THEN (((Asm_frx*(1-EXP(-0.5*Cur_frx*Next_Calls)))-(Asm_frx*(1-EXP(-0.5*Cur_frx*ASSIGNED_CALLS)))) + 
+				((Asm_bre*(1-EXP(-Cur_bre*Next_Calls)))-(Asm_bre*(1-EXP(-Cur_bre*ASSIGNED_CALLS)))))
+				ELSE 0 END
+		
+		--select * from #ZERO_FILE order by in_Q4_22_flag DESC,Asymptote DESC,SD, [New AZID]
+
+
+	Set @mROI= (Select Max(MROI) from #ZERO_FILE)
+
+IF OBJECT_ID('TEMPDB..#maxmROI_v9') IS NOT NULL DROP TABLE #maxmROI_v9
+	Select [Territory ID], Max(MROI) max_mroi
+	into #maxmROI_v9 
+	from #ZERO_FILE
+	where Next_Calls<[Balanced Freq Cap]
+	group by [Territory ID]
+	having max(MROI)>0
+
+	--select * from #maxmROI_v9
+	--IF @mROI>0
+	BEGIN
+		
+		if object_id('tempdb..#TEMP_ASSIGNED_CALLS') is not null DROP TABLE #TEMP_ASSIGNED_CALLS
+		SELECT a.* , 
+		 ROW_NUMBER() OVER (PARTITION BY A.[Territory ID] ORDER BY priority_frx_bre ASC, A.MROI DESC,[FRX Segment],[BRE Segment],SD DESC, [New AZID]) ROW 
+		/*case when a.MROI>600 then ROW_NUMBER() OVER (PARTITION BY A.[Territory ID] ORDER BY A.MROI DESC, SD, [New AZID])
+		else
+			ROW_NUMBER() OVER (PARTITION BY A.[Territory ID] ORDER BY cast(a.in_Q4_22_flag as float) DESC ,A.MROI DESC, SD, [New AZID]) 
+			end ROW*/
+
+		INTO #TEMP_ASSIGNED_CALLS
+		FROM #ZERO_FILE a inner join #maxmROI_v9 as b on a.[Territory ID]=b.[Territory ID]
+		WHERE (MROI>= max_mroi   and Next_Calls<=[Balanced Freq Cap])
+				--or
+				--(MROI>= max_mroi and Next_Calls<=6 and [Hard to see]='Yes')
+		--select * from #TEMP_ASSIGNED_CALLS
+		DELETE FROM #TEMP_ASSIGNED_CALLS WHERE ROW<>1
+
+		
+
+		DELETE FROM #TEMP_ASSIGNED_CALLS
+		FROM #TERR_SUMMARY B
+		WHERE #TEMP_ASSIGNED_CALLS.[Territory ID]=B.[Territory ID]
+		AND #TEMP_ASSIGNED_CALLS.ROW * 1>B.TOT_LEFT
+	
+--DECLARE @itr_no as int =29
+		INSERT INTO #NEURO_ASSIGNED_CALLS
+		SELECT [New AZID], [Territory ID], SD, P1, P2, 
+		(case when Next_Calls=6 then 6
+		--when Next_Calls=6 then 5
+		else 6 END), MROI, @itr_no ITERATION  FROM #TEMP_ASSIGNED_CALLS
+
+
+		UPDATE #ZERO_FILE
+			SET Assigned_Calls=
+		(case  
+				--when #zero_File.Next_Calls = 1 then 1
+				when #zero_File.Next_Calls= 6 then #ZERO_FILE.ASSIGNED_CALLS +6
+				when #zero_File.Next_Calls = 12 then #ZERO_FILE.ASSIGNED_CALLS +6
+		ELSE #zero_File.ASSIGNED_CALLS+ 6
+		END)
+			FROM #TEMP_ASSIGNED_CALLS
+		WHERE #ZERO_FILE.[New AZID]=#TEMP_ASSIGNED_CALLS.[New AZID] and #ZERO_FILE.[Territory ID]=#TEMP_ASSIGNED_CALLS.[Territory ID]
+
+
+		Update #zero_file
+		set	Next_Calls=
+			(case when #zero_File.ASSIGNED_CALLS = 0 then 6
+			  when #zero_File.ASSIGNED_CALLS = 6 then 12
+			 -- when #zero_File.assigned_calls = 6 and #zero_File.[Hard to see]='Yes' then 6
+			ELSE #ZERO_FILE.Next_Calls + 6 END)
+		FROM #TEMP_ASSIGNED_CALLS
+		WHERE #ZERO_FILE.[New AZID]=#TEMP_ASSIGNED_CALLS.[New AZID] and #ZERO_FILE.[Territory ID]=#TEMP_ASSIGNED_CALLS.[Territory ID];
+
+		DELETE FROM #ZERO_FILE
+		FROM #TEMP_ASSIGNED_CALLS A
+		WHERE #ZERO_FILE.[New AZID]=A.[New AZID] AND #ZERO_FILE.SD<>A.SD AND #ZERO_FILE.[Territory ID]=A.[Territory ID]
+		
+		--select *from #NEURO_ASSIGNED_CALLS
+
+		;WITH VT AS(
+		SELECT [Territory ID], SUM(ASSIGNED_CALLS) TOT_CALLS, COUNT(DISTINCT [New AZID]) NUM_TARGET, SUM(CASE WHEN P1 LIKE '%BREZTRI AEROSPHERE%' THEN ASSIGNED_CALLS ELSE 0 END) BRE_P1,
+			SUM(CASE WHEN P1 LIKE '%Farxiga%' THEN ASSIGNED_CALLS ELSE 0 END) FRX_P1, COUNT(DISTINCT CASE WHEN P1 LIKE '%BREZTRI AEROSPHERE%' THEN [New AZID] ELSE NULL END) BRE_P1_TARGET,
+			COUNT(DISTINCT CASE WHEN P1 LIKE '%Farxiga%' THEN [New AZID] ELSE NULL END) FRX_P1_TARGET
+		FROM #NEURO_ASSIGNED_CALLS
+		GROUP BY [Territory ID]
+		)
+		UPDATE #TERR_SUMMARY
+		SET TOT_ASSIGNED=VT.TOT_CALLS, TOT_LEFT=@REPCAP-VT.TOT_CALLS, TARGETS_LEFT=15000-NUM_TARGET, BRE_P1=VT.BRE_P1, FRX_P1=VT.FRX_P1,
+			BRE_P1_TARGET=VT.BRE_P1_TARGET, FRX_P1_TARGET=VT.FRX_P1_TARGET
+		FROM VT WHERE #TERR_SUMMARY.[Territory ID]=VT.[Territory ID]
+
+		--Delete HCPs corresponding to maxed out territories
+		DELETE FROM #ZERO_FILE
+		FROM #TERR_SUMMARY
+		WHERE #ZERO_FILE.[Territory ID]=#TERR_SUMMARY.[Territory ID]
+		AND #TERR_SUMMARY.TOT_LEFT< 1 -------changed from 0 to 6 if max WL not multple of 6
+
+	
+		----Delete SDs for HCPs corresponding to territories where max PDE has reached
+		/*DELETE FROM #ZERO_FILE
+		FROM #TERR_SUMMARY A
+		WHERE #ZERO_FILE.[Territory ID]=A.[Territory ID]
+		AND(
+		--(A.BRI_P1>=@BRI_BAG*@MAX_CALL*@REPCAP AND P1 LIKE '%BRI%') OR 
+		(A.FRX_P1>=@FRX_BAG*@MAX_CALL*@REPCAP AND P1 LIKE '%FRX%'))
+		*/
+		DELETE FROM #ZERO_FILE 
+		WHERE ASSIGNED_CALLS=[Balanced Freq Cap]
+
+	END
+	PRINT 'END OF LOOP ' + CAST (@ITR_NO AS nvarchar)
+	Set @itr_no=@itr_no+1
+	Set @total_calls= (Select SUM(ASSIGNED_CALLS) from #NEURO_ASSIGNED_CALLS)
+	SET @RCD = (Select COUNT( * ) from #ZERO_FILE)
+END
+
+
+
+
+SELECT *  from #NEURO_ASSIGNED_CALLS 
+
+Select * from #NEURO_ASSIGNED_CALLS where [New AZID] ='56535288'
+
+DROP TABLE #Output
+SELECT[New AZID], [Territory ID], SD, P1, P2, SUM(ASSIGNED_CALLS) TOT_CALLS, SUM(MROI) MROI
+into #Output
+FROM #NEURO_ASSIGNED_CALLS 
+GROUP BY [New AZID], [Territory ID], SD, P1, P2
+
+
+SELECT * FROM #Output
+SELECT COUNT(*) FROM #Output
+where [New AZID] = 58155595
+
+drop table #output_asper_freq_cap
+select distinct a.*,
+[Frequency Cap],[Balanced Freq Cap]
+into #output_asper_freq_cap
+from #Output a
+left join #balanced_freq_cap b on a.[New AZID]=b.[New AZID] and a.[Territory ID]=b.[Territory ID]
+
+Code to pull address info
+
+select * from [dbo].[l209_AZ_IAT_CUST_ADDR_TEAM_04192023] 
+
+SELECT * FROM #l191_Geo_zip_FuncTerr Mapping
+
+code2----------------
+
+drop table #GEO_terr_mapping
+select * into #GEO_terr_mapping 
+from [dbo].[Sales IQ data2 _Q3'22 Territory Geo Mapping]
+
+DROP TABLE VisaX1
+select * into VisaX1 
+from [Sales IQ data2 _Q3'22 Territory Geo Mapping] where [Team Name] ='VISAx';
+
+select distinct [Team Name] from [Sales IQ data2 _Q3'22 Territory Geo Mapping]
+
+
+-----------------------------import VISAX Q3'23 CP and VISAX ZTT into temp------------------
+
+drop table #VISAX_HCP
+select distinct [AZ ID] 
+into #VISAX_HCP
+from [dbo].[2023-05-31 Q3'23 VISAx National Call Plan Workbook v2]
+
+select * from [dbo].[2023-05-31 Q3'23 VISAx National Call Plan Workbook v2]
+
+select * from [dbo].[ZTT -latest SHARP extract_]
+
+--------------------------------------AZ ID Refresh and Exclusions-------------------------------------------
+
+drop table #az_id_refresh
+Select a.*, b.cust_id as [NEW AZ ID]
+into #az_id_refresh
+from  #VISAX_HCP a
+	LEFT join [AZ_Call_Plan_Q4_2023].[dbo].[Raw_merge_unmerge_June_2023] b
+	on a.[AZ ID]= b.old_cust_id
+
+
+--15027
+select * from #az_id_refresh
+where [NEW AZ ID] != [AZ ID]
+
+drop table #with_exclusions
+SELECT *,
+	  case when [NEW AZ ID] in (select  ["az_cust_id"] from [AZ_Call_Plan_Q4_2023].[dbo].[Raw_No_See_0713]) then 'Y' else 'N' end as [No See],
+	  Case when [NEW AZ ID] in ( SELECT ["az_cust_id"] from [AZ_Call_Plan_Q4_2023].[dbo].[Raw_Kaiser_0713] where ["cust_clas"]='HCP') then 'Y' else 'N' END as Kaiser,
+	  case when [NEW AZ ID] in (select  az_cust_id  from [AZ_Call_Plan_Q4_2023].[dbo].[Raw_d_cust_0714] where cust_sta_cd='D' OR cust_sta_cd='R' OR cust_sta_cd='I') then 'Y' else 'N' END as DRI,
+	  case when [NEW AZ ID] in (select az_cust_id  from [AZ_Call_Plan_Q4_2023].[dbo].[Raw_Pueblo_0713] where block_type='Legal HR Block List' and agnostic_blk_ind='Y') then 'Y' else 'N' END as Legal
+into #with_exclusions
+FROM #az_id_refresh
+
+select * from [AZ_Call_Plan_Q4_2023].[dbo].[Raw_Pueblo_0713] 
+
+
+
+--QC
+SELECT distinct [NEW AZ ID] from #with_exclusions WHERE [No See] ='N' AND Kaiser ='N' AND DRI = 'N' AND Legal = 'Y'
+
+--(15027 rows affected)
+---------------------------------Pubelo------------
+drop table #pueblo1
+ select * into #pueblo1 from [AZ_Call_Plan_Q4_2023].[dbo].[Raw_Pueblo_0713] 
+
+ SELECT * FROM #pueblo1
+ --(46101693 rows affected)
+
+ drop table #pueblo
+ Select distinct coalesce(b.cust_id,a.[az_cust_id]) as new_Az_id,block_type,brd_nm,cust_clas,mstr_prod_blk 
+ into #pueblo
+ from #pueblo1 a LEFT join [AZ_Call_Plan_Q4_2023].[dbo].[Raw_merge_unmerge_June_2023] b
+	on a.[az_cust_id]= b.old_cust_id
+
+--select distinct brd_nm from #pueblo1
+drop table #pueblo_frx
+select distinct pd.*,
+	case when pd.[NEW AZ ID]=pb.az_cust_id 
+			    and  pb.block_type in ('Brand/Specialty Exclusion','HCI Block','Specialty Not Applicable List') 
+				and  pb.brd_nm in ('FARXIGA') 
+				and  (pb.mstr_prod_blk='Y')
+		 then 'Y' else 'N' end [PUEBLO FRX]
+into #pueblo_frx
+from #with_exclusions pd 
+	left join (select az_cust_id,block_type,brd_nm,cust_clas,mstr_prod_blk
+			from #pueblo1 
+			where block_type in ('Brand/Specialty Exclusion','HCI Block','Specialty Not Applicable List') and
+			brd_nm in ('FARXIGA'))pb on pd.[NEW AZ ID]=pb.az_cust_id
+--
+
+ drop table #pueblo_BRE
+select distinct pd.*,
+	case when pd.[NEW AZ ID]=pb.az_cust_id 
+			    and  pb.block_type in ('Brand/Specialty Exclusion','HCI Block','Specialty Not Applicable List') 
+				and  pb.brd_nm in ('BREZTRI AEROSPHERE') 
+				and  (pb.mstr_prod_blk='Y')
+		 then 'Y' else 'N' end [PUEBLO BRE]
+into #pueblo_BRE
+from #pueblo_frx pd 
+	left join (select az_cust_id,block_type,brd_nm,cust_clas,mstr_prod_blk
+			from #pueblo1
+			where block_type in ('Brand/Specialty Exclusion','HCI Block','Specialty Not Applicable List') and
+			brd_nm in ('BREZTRI AEROSPHERE')) pb on pd.[NEW AZ ID]=pb.az_cust_id
+--15,027
+
+select DISTINCT [NEW AZ ID] from #pueblo_BRE WHERE [PUEBLO BRE] = 'Y' AND [PUEBLO FRX] ='Y'
+
+
+----------------------------IAT & D_CUST------------------
+
+drop table #IAT
+select * 
+into #IAT 
+from [dbo].[l209_AZ_IAT_CUST_ADDR_TEAM_04192023] where team_nm = 'VISAx'
+--(719047 rows affected)
+
+--select distinct cluster_nm from #IAT
+
+drop table #IAT_max_addr
+select cust_id,team_nm,zip,cluster_nm,MAX(cast(addr_id as float)) as max_addr_id
+into #IAT_max_addr 
+from #IAT 
+group by cust_id,team_nm,zip,cluster_nm
+--(631934 rows affected)
+
+drop table #IAT_info_on_max_addr
+select b.* 
+into #IAT_info_on_max_addr
+from #IAT_max_addr a left join #IAT b 
+on a.cust_id=b.cust_id and a.max_addr_id=b.addr_id 
+and a.team_nm=b.team_nm and a.zip=b.zip and a.cluster_nm=b.cluster_nm
+--(631935 rows affected)
+
+--code done till now
+
+
+----------------------------------------Importing D_cust_addr_june_22-------------------
+
+drop table #customer_address_priority_addr_type
+select *  into #customer_address_priority_addr_type 
+from [dbo].[l220_d_cust_addr_June_22 v1] where addr_typ_cd in ('INCNTV','COMN') or 
+(addr_typ_cd='CALL' and cust_addr_rnk in ('6','7','8','9','10'))
+
+--(17620230 rows affected)
+--select * from [dbo].[l220_d_cust_addr_June_22 v1]
+
+select * 
+from #IAT_info_on_max_addr
+--------------------------------------zip from IAT--------------------
+
+drop table #ZIP_FROM_IAT
+select a.*,b.zip,b.addr_typ_cd,b.addr_id,b.cluster_nm,b.team_nm ,b.st_cd,addr_line_1,addr_line_2,addr_line_3,b.city_nm
+into #ZIP_FROM_IAT
+from #pueblo_BRE a left join 
+(select 
+--cust_id,zip,addr_typ_cd,addr_id,cluster_nm,team_nm
+* from #IAT_info_on_max_addr) b
+on a.[NEW AZ ID]=b.cust_id 
+--18,206
+
+select * from #ZIP_FROM_IAT
+
+drop table #ZIP_found_in_IAT
+select * 
+into #ZIP_found_in_IAT
+from #ZIP_FROM_IAT where zip <> NULL or zip<>'99999'
+--(16793 rows affected)
+
+drop table #ZIP_not_found_in_IAT
+select distinct [AZ ID],[NEW AZ ID],[No See],Kaiser,Legal,DRI,[PUEBLO FRX],[PUEBLO BRE]
+into #ZIP_not_found_in_IAT
+from #ZIP_FROM_IAT where zip is NULL or zip='99999'
+--1,413
+
+select * from #ZIP_not_found_in_IAT
+
+-------------------------------------ZIP from CUST_Address_june_22----------------------
+
+drop table #visax_spec_zip_addr_customer_address
+select a.*,b.zip ,b.az_addr_id,cust_addr_rnk,addr_typ_cd,b.st_cd,city_nm,addr_line_1,addr_line_2,addr_line_3
+into #visax_spec_zip_addr_customer_address
+from #ZIP_not_found_in_IAT a left join #customer_address_priority_addr_type b on a.[NEW AZ ID]=b.az_cust_id
+--3,427
+
+
+
+drop table  #visax_spec_addr_typ_rank
+select *, CASE
+				WHEN addr_typ_cd='INCNTV' then 1
+				WHEN addr_typ_cd='CALL' and cust_addr_rnk in ('10','9')  then 2
+				WHEN addr_typ_cd='CALL' and cust_addr_rnk in ('6','7','8') then 3
+				WHEN addr_typ_cd='COMN' then 4
+			ELSE 99
+				end 
+				as addr_RANK_on_addr_typ
+		INTO #visax_spec_addr_typ_rank
+FROM #visax_spec_zip_addr_customer_address
+--3427
+
+select * from #visax_spec_addr_typ_rank where zip is null
+
+drop table #max_addr_id_customer_address
+select [NEW AZ ID],zip,max(cast(az_addr_id as float))as max_addr_id,addr_RANK_on_addr_typ 
+into #max_addr_id_customer_address
+from #visax_spec_addr_typ_rank 
+where zip is not null 
+group by [NEW AZ ID],[zip],[addr_RANK_on_addr_typ]
+--3247
+
+select * from #max_addr_id_customer_address order by [NEW AZ ID]
+
+
+drop table #temp1
+select distinct b.* 
+into #temp1
+from #max_addr_id_customer_address a left join #visax_spec_addr_typ_rank b 
+on  a.[NEW AZ ID]=b.[NEW AZ ID] and a.zip=b.zip and a.max_addr_id=b.az_addr_id and 
+a.addr_RANK_on_addr_typ=b.addr_RANK_on_addr_typ
+--3,247
+
+select * from #temp1 order by [NEW AZ ID]
+
+DROP TABLE #visax_addr_rank
+SELECT  * , ROW_NUMBER() OVER( PARTITION BY [AZ ID] ORDER BY CASE
+								WHEN addr_typ_cd='INCNTV' then 1
+								WHEN addr_typ_cd='CALL' and cust_addr_rnk in ('10','9')  then 2
+								WHEN addr_typ_cd='CALL' and cust_addr_rnk in ('6','7','8') then 3
+								WHEN addr_typ_cd='COMN' then 4
+								ELSE 99
+								end,cast(az_addr_id as float) desc )
+								as addr_RANK 
+		INTO #visax_addr_rank
+FROM #temp1
+--3247
+
+select * from #visax_addr_rank order by [AZ ID]
+
+drop table #visa_final_zip_from_cust
+select distinct a.*,b.zip,b.az_addr_id ,b.cust_addr_rnk ,
+b.addr_typ_cd ,b.city_nm,st_cd,addr_line_1,addr_line_2,addr_line_3,b.addr_RANK_on_addr_typ,b.addr_RANK
+into #VISA_final_zip_from_cust
+from  #ZIP_not_found_in_IAT a left join (select * from #visax_addr_rank where addr_RANK =1) b 
+on a.[NEW AZ ID]=b.[NEW AZ ID]
+--1,413
+
+drop table #zip_from_d_cust_addr_june_22
+select * 
+into #zip_from_d_cust_addr_june_22
+from #VISA_final_zip_from_cust where zip is not NULL
+--1,413
+
+select * from #zip_from_d_cust_addr_june_22
+
+drop table #no_zip_in_IAT_or_d_cust_addr
+select * 
+into #no_zip_in_IAT_or_d_cust_addr
+from #VISA_final_zip_from_cust where zip is NULL
+--2
+
+select * from #no_zip_in_IAT_or_d_cust_addr
+
+
+-----------------------UNION OF ZIP FROM IAT AND D_CUST-------------
+
+select * from #zip_from_d_cust_addr_june_22
+
+drop table #Union_of_zip_from_IAT_and_D_cust
+select [AZ ID],[NEW AZ ID] AS [NEW AZ ID1],[No See],Kaiser,DRI,Legal,[PUEBLO FRX],[PUEBLO BRE],ZIP,addr_typ_cd,addr_id,st_cd,city_nm,
+addr_line_1,addr_line_2,addr_line_3
+into #Union_of_zip_from_IAT_and_D_cust
+from #ZIP_found_in_IAT
+union
+select [AZ ID],[NEW AZ ID] AS [NEW AZ ID1],[No See],Kaiser,DRI,Legal,[PUEBLO FRX],[PUEBLO BRE],ZIP,addr_typ_cd,az_addr_id,st_cd,city_nm,
+addr_line_1,addr_line_2,addr_line_3
+from #zip_from_d_cust_addr_june_22
+--18206
+
+--select * from #Union_of_zip_from_IAT_and_D_cust where addr_typ_cd NOT IN ('IAT')
+
+
+-----------------------------------------Territory Alignment from ZIP----------------------
+drop table ztt_visa
+select * into ztt_visa 
+from [dbo].[ZTT -latest SHARP extract_] 
+where team_nm = 'VISAx'
+
+select * from ztt_visa where LEN(zip_cd)<5
+
+DROP TABLE #ztt_with_padding_zipVISAX
+SELECT *,RIGHT (CONCAT('00000',zip_cd),5) AS Padded_ZIP
+INTO #ztt_with_padding_zipVISAX
+FROM [dbo].ztt_visa
+
+DROP TABLE #ztt_with_CP
+SELECT *,RIGHT (CONCAT('00000',zip),5) AS ZIP1
+INTO #ztt_with_CP
+FROM #Union_of_zip_from_IAT_and_D_cust
+
+
+drop table #VISAX_ZIP_TO_GEO
+select a.*,b.*
+into #VISAX_ZIP_TO_GEO
+from #ztt_with_CP a left join #ztt_with_padding_zipVISAX b
+on a.zip1=b.Padded_ZIP
+--18206
+
+SELECT * FROM #VISAX_ZIP_TO_GEO
+
+
+
+
+select * from #VISAX_ZIP_TO_GEO
+select * from ztt_visa
+
+select * from #GEO_terr_mapping
+
+--QC
+
+drop table #aligned_universeISSHCP_V1
+Select A.*,b.az_cust_id as [NEW AZ ID]
+into #aligned_universeISSHCP_V1
+from [dbo]. [2023-05-31 Q3'23 VISAx National Call Plan Workbook v2] A
+	LEFT join [dbo].[l128_d_old_cust_id_xref]  b
+	on A.[AZ ID]= b.old_az_cust_id
+
+select * from #VISAX_ZIP_TO_GEO
+
+SELECT * FROM #aligned_universeISSHCP_V1
+
+ALTER TABLE #VISAX_ZIP_TO_GEO
+DROP COLUMN [AZ ID]
+
+
+SELECT * FROM #VISAX_ZIP_TO_GEO
+DROP TABLE FINAL_MATCH_CP
+SELECT A.*,B.*
+--CASE WHEN A.[HCA AZ ID]=B.[NEW AZ ID] 
+--AND [AZ Territory ID]= B.[Territory ID ISS] THEN 1 ELSE 0 END AS FLAG
+INTO FINAL_MATCH_CP
+FROM #aligned_universeISSHCP_V1 A
+LEFT JOIN #VISAX_ZIP_TO_GEO B
+ON A.[NEW AZ ID]=B.[NEW AZ ID1]
+
+SELECT DISTINCT A.* FROM FINAL_MATCH_CP A 
+drop table FINAL_MATCH_CP1
+SELECT DISTINCT A.*,CASE 
+	WHEN A.[NEW AZ ID]=B.[NEW AZ ID] AND A.[AZ Territory ID]= B.[az_funcl_terr_id] THEN 1 
+	WHEN A.[NEW AZ ID]=B.[NEW AZ ID] AND A.[AZ Territory ID]<> B.[az_funcl_terr_id] THEN 2 ELSE 3 
+END AS FLAG INTO FINAL_MATCH_CP1
+FROM FINAL_MATCH_CP A
+JOIN FINAL_MATCH_CP B
+ON A.[NEW AZ ID]= B.[NEW AZ ID]
+
+SELECT A.* FROM FINAL_MATCH_CP1 A WHERE FLAG = 1
+SELECT * FROM FINAL_MATCH_CP1 A WHERE FLAG = 2
+SELECT * FROM FINAL_MATCH_CP1 A WHERE FLAG = 3
+
+select * from FINAL_MATCH_CP1
+
+DROP TABLE #final_cp_visax1
+SELECT  * , ROW_NUMBER() OVER( PARTITION BY [NEW AZ ID],[az_funcl_terr_id] ORDER BY CASE
+								when addr_typ_cd = 'IAT' then 1
+								WHEN addr_typ_cd='INCNTV' then 2
+								WHEN addr_typ_cd='CALL' THEN 3
+								WHEN addr_typ_cd='COMN' then 5
+								ELSE 99
+								end )
+								as addr_RANK_VISAX
+								INTO #final_cp_visax1
+						FROM FINAL_MATCH_CP1
+--1979
+
+SELECT * FROM #final_cp_visax1 WHERE addr_RANK_VISAX = 1
+
+
+
+

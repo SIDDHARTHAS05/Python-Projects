@@ -1,0 +1,228 @@
+
+
+--select [Territory ID],sum([Balanced Freq Cap]) from #accessible_univ group by [Territory ID] where [Territory ID]='20113413'
+
+--select  *   from #ZERO_FILE 
+--62976
+
+drop table #ZERO_FILE
+SELECT * INTO #ZERO_FILE FROM #Zero_file_temp_case
+
+--------------------------------------------
+DECLARE @itr_no as int = 1
+DECLARE @max_itr as int =3500
+DECLARE @REPCAP AS FLOAT = 1700
+--DECLARE @cost_per_call as float = 1
+--
+DECLARE @MAX_CALL AS FLOAT = 1.3
+DECLARE @MIN_CALL AS FLOAT = 0.9
+DECLARE @total_calls as int = 0
+DECLARE @max_calls as int = 1700
+DECLARE @mROI as float = 1
+DECLARE @FACT AS FLOAT = 1
+DECLARE @RCD AS INT = 1
+DECLARE @BRE_BAG AS FLOAT = 1.0
+--
+DECLARE @FRX_BAG AS FLOAT = 1.0
+--
+DECLARE @MAX_TARGETS AS INT = 1500
+
+
+
+
+
+UPDATE #ZERO_FILE 
+SET MROI= CASE WHEN  SD='FRX' THEN (Asm_frx*(1-EXP(-Cur_frx*Next_Calls)))-(Asm_frx*(1-EXP(-Cur_frx*ASSIGNED_CALLS)))
+				WHEN  SD='FRX-BRE' THEN (((Asm_frx*(1-EXP(-Cur_frx*Next_Calls)))-(Asm_frx*(1-EXP(-Cur_frx*ASSIGNED_CALLS)))) + 
+				((Asm_bre*(1-EXP(-Cur_bre*Next_Calls*0.5)))-(Asm_bre*(1-EXP(-Cur_bre*ASSIGNED_CALLS*0.5)))))
+				WHEN  SD='BRE' THEN (Asm_bre*(1-EXP(-Cur_bre*Next_Calls)))-(Asm_bre*(1-EXP(-Cur_bre*ASSIGNED_CALLS)))
+				WHEN  SD='BRE-FRX' THEN (((Asm_frx*(1-EXP(-0.5*Cur_frx*Next_Calls)))-(Asm_frx*(1-EXP(-0.5*Cur_frx*ASSIGNED_CALLS)))) + 
+				((Asm_bre*(1-EXP(-Cur_bre*Next_Calls)))-(Asm_bre*(1-EXP(-Cur_bre*ASSIGNED_CALLS)))))
+				ELSE 0 END
+		
+		
+--select * from #ZERO_FILE where MROI == 0
+
+--select  *  from #ZERO_FILE
+IF OBJECT_ID('TEMPDB..#NEURO_ASSIGNED_CALLS') IS NOT NULL DROP TABLE #NEURO_ASSIGNED_CALLS
+create table #NEURO_ASSIGNED_CALLS (
+[New AZID]		varchar(100), 
+[Territory ID]	varchar(100), 
+SD varchar(100),  
+P1  			varchar(100), 
+P2  			varchar(100), 
+ASSIGNED_CALLS 	int, 
+MROI 			float, 
+ITERATION 		int
+)
+
+
+
+
+--select  *  from #NEURO_ASSIGNED_CALLS
+
+ --no records from this filter will only create table 
+
+IF OBJECT_ID('TEMPDB..#TERR_SUMMARY') IS NOT NULL DROP TABLE #TERR_SUMMARY
+SELECT [Territory ID] AS [Territory ID], SUM(ASSIGNED_CALLS) TOT_ASSIGNED, @REPCAP - SUM(ASSIGNED_CALLS) TOT_LEFT,
+	150 TARGETS_LEFT, 0 BRE_P1, 0 FRX_P1, 0 BRE_P1_TARGET, 0 FRX_P1_TARGET
+INTO #TERR_SUMMARY
+FROM #ZERO_FILE
+GROUP BY [Territory ID]
+
+--select * from #TERR_SUMMARY
+
+--select  *  from #TERR_SUMMARY
+-------------------------------------------------
+--remove mroi >0
+
+WHILE @itr_no<=@max_itr AND @RCD >0 --AND @total_calls<=@max_calls --AND @mROI>0 
+BEGIN
+
+--DECLARE @cost_per_call as float = 1
+	
+UPDATE #ZERO_FILE 
+SET MROI= CASE WHEN  SD='FRX' THEN (Asm_frx*(1-EXP(-Cur_frx*Next_Calls)))-(Asm_frx*(1-EXP(-Cur_frx*ASSIGNED_CALLS)))
+				WHEN  SD='FRX-BRE' THEN (((Asm_frx*(1-EXP(-Cur_frx*Next_Calls)))-(Asm_frx*(1-EXP(-Cur_frx*ASSIGNED_CALLS)))) + 
+				((Asm_bre*(1-EXP(-Cur_bre*Next_Calls*0.5)))-(Asm_bre*(1-EXP(-Cur_bre*ASSIGNED_CALLS*0.5)))))
+				WHEN  SD='BRE' THEN (Asm_bre*(1-EXP(-Cur_bre*Next_Calls)))-(Asm_bre*(1-EXP(-Cur_bre*ASSIGNED_CALLS)))
+				WHEN  SD='BRE-FRX' THEN (((Asm_frx*(1-EXP(-0.5*Cur_frx*Next_Calls)))-(Asm_frx*(1-EXP(-0.5*Cur_frx*ASSIGNED_CALLS)))) + 
+				((Asm_bre*(1-EXP(-Cur_bre*Next_Calls)))-(Asm_bre*(1-EXP(-Cur_bre*ASSIGNED_CALLS)))))
+				ELSE 0 END
+		
+		--select * from #ZERO_FILE order by in_Q4_22_flag DESC,Asymptote DESC,SD, [New AZID]
+
+
+	Set @mROI= (Select Max(MROI) from #ZERO_FILE)
+
+IF OBJECT_ID('TEMPDB..#maxmROI_v9') IS NOT NULL DROP TABLE #maxmROI_v9
+	Select [Territory ID], Max(MROI) max_mroi
+	into #maxmROI_v9 
+	from #ZERO_FILE
+	where Next_Calls<[Balanced Freq Cap]
+	group by [Territory ID]
+	having max(MROI)>0
+
+	--select * from #maxmROI_v9
+	--IF @mROI>0
+	BEGIN
+		
+		if object_id('tempdb..#TEMP_ASSIGNED_CALLS') is not null DROP TABLE #TEMP_ASSIGNED_CALLS
+		SELECT a.* , 
+		 ROW_NUMBER() OVER (PARTITION BY A.[Territory ID] ORDER BY priority_frx_bre ASC, A.MROI DESC,[FRX Segment],[BRE Segment],SD DESC, [New AZID]) ROW 
+		/*case when a.MROI>600 then ROW_NUMBER() OVER (PARTITION BY A.[Territory ID] ORDER BY A.MROI DESC, SD, [New AZID])
+		else
+			ROW_NUMBER() OVER (PARTITION BY A.[Territory ID] ORDER BY cast(a.in_Q4_22_flag as float) DESC ,A.MROI DESC, SD, [New AZID]) 
+			end ROW*/
+
+		INTO #TEMP_ASSIGNED_CALLS
+		FROM #ZERO_FILE a inner join #maxmROI_v9 as b on a.[Territory ID]=b.[Territory ID]
+		WHERE (MROI>= max_mroi   and Next_Calls<=[Balanced Freq Cap])
+				--or
+				--(MROI>= max_mroi and Next_Calls<=6 and [Hard to see]='Yes')
+		--select * from #TEMP_ASSIGNED_CALLS
+		DELETE FROM #TEMP_ASSIGNED_CALLS WHERE ROW<>1
+
+		
+
+		DELETE FROM #TEMP_ASSIGNED_CALLS
+		FROM #TERR_SUMMARY B
+		WHERE #TEMP_ASSIGNED_CALLS.[Territory ID]=B.[Territory ID]
+		AND #TEMP_ASSIGNED_CALLS.ROW * 1>B.TOT_LEFT
+	
+--DECLARE @itr_no as int =29
+		INSERT INTO #NEURO_ASSIGNED_CALLS
+		SELECT [New AZID], [Territory ID], SD, P1, P2, 
+		(case when Next_Calls=6 then 6
+		--when Next_Calls=6 then 5
+		else 6 END), MROI, @itr_no ITERATION  FROM #TEMP_ASSIGNED_CALLS
+
+
+		UPDATE #ZERO_FILE
+			SET Assigned_Calls=
+		(case  
+				--when #zero_File.Next_Calls = 1 then 1
+				when #zero_File.Next_Calls= 6 then #ZERO_FILE.ASSIGNED_CALLS +6
+				when #zero_File.Next_Calls = 12 then #ZERO_FILE.ASSIGNED_CALLS +6
+		ELSE #zero_File.ASSIGNED_CALLS+ 6
+		END)
+			FROM #TEMP_ASSIGNED_CALLS
+		WHERE #ZERO_FILE.[New AZID]=#TEMP_ASSIGNED_CALLS.[New AZID] and #ZERO_FILE.[Territory ID]=#TEMP_ASSIGNED_CALLS.[Territory ID]
+
+
+		Update #zero_file
+		set	Next_Calls=
+			(case when #zero_File.ASSIGNED_CALLS = 0 then 6
+			  when #zero_File.ASSIGNED_CALLS = 6 then 12
+			 -- when #zero_File.assigned_calls = 6 and #zero_File.[Hard to see]='Yes' then 6
+			ELSE #ZERO_FILE.Next_Calls + 6 END)
+		FROM #TEMP_ASSIGNED_CALLS
+		WHERE #ZERO_FILE.[New AZID]=#TEMP_ASSIGNED_CALLS.[New AZID] and #ZERO_FILE.[Territory ID]=#TEMP_ASSIGNED_CALLS.[Territory ID];
+
+		DELETE FROM #ZERO_FILE
+		FROM #TEMP_ASSIGNED_CALLS A
+		WHERE #ZERO_FILE.[New AZID]=A.[New AZID] AND #ZERO_FILE.SD<>A.SD AND #ZERO_FILE.[Territory ID]=A.[Territory ID]
+		
+		--select *from #NEURO_ASSIGNED_CALLS
+
+		;WITH VT AS(
+		SELECT [Territory ID], SUM(ASSIGNED_CALLS) TOT_CALLS, COUNT(DISTINCT [New AZID]) NUM_TARGET, SUM(CASE WHEN P1 LIKE '%BREZTRI AEROSPHERE%' THEN ASSIGNED_CALLS ELSE 0 END) BRE_P1,
+			SUM(CASE WHEN P1 LIKE '%Farxiga%' THEN ASSIGNED_CALLS ELSE 0 END) FRX_P1, COUNT(DISTINCT CASE WHEN P1 LIKE '%BREZTRI AEROSPHERE%' THEN [New AZID] ELSE NULL END) BRE_P1_TARGET,
+			COUNT(DISTINCT CASE WHEN P1 LIKE '%Farxiga%' THEN [New AZID] ELSE NULL END) FRX_P1_TARGET
+		FROM #NEURO_ASSIGNED_CALLS
+		GROUP BY [Territory ID]
+		)
+		UPDATE #TERR_SUMMARY
+		SET TOT_ASSIGNED=VT.TOT_CALLS, TOT_LEFT=@REPCAP-VT.TOT_CALLS, TARGETS_LEFT=15000-NUM_TARGET, BRE_P1=VT.BRE_P1, FRX_P1=VT.FRX_P1,
+			BRE_P1_TARGET=VT.BRE_P1_TARGET, FRX_P1_TARGET=VT.FRX_P1_TARGET
+		FROM VT WHERE #TERR_SUMMARY.[Territory ID]=VT.[Territory ID]
+
+		--Delete HCPs corresponding to maxed out territories
+		DELETE FROM #ZERO_FILE
+		FROM #TERR_SUMMARY
+		WHERE #ZERO_FILE.[Territory ID]=#TERR_SUMMARY.[Territory ID]
+		AND #TERR_SUMMARY.TOT_LEFT< 1 -------changed from 0 to 6 if max WL not multple of 6
+
+	
+		----Delete SDs for HCPs corresponding to territories where max PDE has reached
+		/*DELETE FROM #ZERO_FILE
+		FROM #TERR_SUMMARY A
+		WHERE #ZERO_FILE.[Territory ID]=A.[Territory ID]
+		AND(
+		--(A.BRI_P1>=@BRI_BAG*@MAX_CALL*@REPCAP AND P1 LIKE '%BRI%') OR 
+		(A.FRX_P1>=@FRX_BAG*@MAX_CALL*@REPCAP AND P1 LIKE '%FRX%'))
+		*/
+		DELETE FROM #ZERO_FILE 
+		WHERE ASSIGNED_CALLS=[Balanced Freq Cap]
+
+	END
+	PRINT 'END OF LOOP ' + CAST (@ITR_NO AS nvarchar)
+	Set @itr_no=@itr_no+1
+	Set @total_calls= (Select SUM(ASSIGNED_CALLS) from #NEURO_ASSIGNED_CALLS)
+	SET @RCD = (Select COUNT( * ) from #ZERO_FILE)
+END
+
+
+
+
+SELECT *  from #NEURO_ASSIGNED_CALLS 
+
+Select * from #NEURO_ASSIGNED_CALLS where [New AZID] ='56535288'
+
+DROP TABLE #Output
+SELECT[New AZID], [Territory ID], SD, P1, P2, SUM(ASSIGNED_CALLS) TOT_CALLS, SUM(MROI) MROI
+into #Output
+FROM #NEURO_ASSIGNED_CALLS 
+GROUP BY [New AZID], [Territory ID], SD, P1, P2
+
+
+SELECT * FROM #Output
+SELECT COUNT(*) FROM #Output
+where [New AZID] = 58155595
+
+drop table #output_asper_freq_cap
+select distinct a.*,
+[Frequency Cap],[Balanced Freq Cap]
+into #output_asper_freq_cap
+from #Output a
+left join #balanced_freq_cap b on a.[New AZID]=b.[New AZID] and a.[Territory ID]=b.[Territory ID]
